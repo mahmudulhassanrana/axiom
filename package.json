@@ -1,0 +1,21 @@
+{
+  "name": "axiom",
+  "private": true,
+  "packageManager": "pnpm@9.15.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "dev:web": "pnpm --filter @axiom/web dev",
+    "dev:worker": "bash scripts/run-worker.sh",
+    "redis:brew": "bash scripts/install-redis-brew.sh",
+    "build:web": "pnpm --filter @axiom/web build",
+    "lint:web": "pnpm --filter @axiom/web lint"
+  },
+  "devDependencies": {
+    "prettier": "^3.4.0"
+  }
+}

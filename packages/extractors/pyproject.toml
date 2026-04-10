@@ -1,0 +1,41 @@
+[project]
+name = "axiom-extractors"
+version = "0.1.0"
+description = "Modular HTML/JS page extractors with normalized output"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "beautifulsoup4>=4.12.0",
+  "playwright>=1.49.0",
+  "pydantic>=2.0.0",
+  "requests>=2.32.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "axiom-testkit @ file:../../packages/testkit",
+  "pytest>=8.3.0",
+  "responses>=0.25.0",
+  "ruff>=0.8.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/axiom_extractors"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
