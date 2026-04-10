@@ -44,7 +44,7 @@ def get_jwt_audience() -> str:
 def get_database_url() -> str:
     return os.environ.get(
         "DATABASE_URL",
-        "postgresql+asyncpg://axiom:axiom@localhost:5432/axiom",
+        "postgresql+asyncpg://postgres:@127.0.0.1:5435/axiom",
     )
 
 

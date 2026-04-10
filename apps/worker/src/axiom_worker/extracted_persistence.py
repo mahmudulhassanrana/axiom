@@ -10,29 +10,22 @@ from uuid import UUID
 logger = logging.getLogger(__name__)
 
 
-def _dsn() -> str | None:
-    import os
-
-    url = os.environ.get("DATABASE_URL", "").strip()
-    if not url:
-        return None
-    if "+asyncpg" in url:
-        return url.replace("postgresql+asyncpg", "postgresql", 1)
-    return url
-
-
 def insert_extracted_data(run_id: UUID, doc: dict[str, Any]) -> None:
     """Insert one row; ``doc`` is ``ExtractedDocument.to_json_dict()``."""
-    dsn = _dsn()
+    from axiom_worker.db_sync import get_psycopg_dsn
+
+    dsn = get_psycopg_dsn()
     if not dsn:
-        logger.warning("extracted_persistence.skip_no_database_url", extra={"run_id": str(run_id)})
-        return
+        msg = "DATABASE_URL is not set; cannot persist extracted data for this run"
+        logger.error("extracted_persistence.no_database_url", extra={"run_id": str(run_id)})
+        raise RuntimeError(msg)
     try:
         import psycopg
         from psycopg.types.json import Json
-    except ImportError:
-        logger.warning("extracted_persistence.psycopg_missing")
-        return
+    except ImportError as exc:
+        msg = "psycopg is required to persist extracted data"
+        logger.error("extracted_persistence.psycopg_missing", extra={"run_id": str(run_id)})
+        raise RuntimeError(msg) from exc
 
     links = doc.get("links") or []
     meta = doc.get("metadata") if isinstance(doc.get("metadata"), dict) else {}
@@ -83,7 +76,10 @@ def insert_extracted_data(run_id: UUID, doc: dict[str, Any]) -> None:
         raise
 
     logger.info(
-        "extracted_persistence.saved",
+        "Data saved run_id=%s extracted_data_id=%s extractor_kind=%s",
+        run_id,
+        row_id,
+        extractor_kind,
         extra={
             "run_id": str(run_id),
             "extracted_data_id": str(row_id),

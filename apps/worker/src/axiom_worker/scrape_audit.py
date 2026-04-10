@@ -1,21 +1,11 @@
 from __future__ import annotations
 
 import logging
-import os
 import uuid
 from typing import Any
 from uuid import UUID
 
 logger = logging.getLogger(__name__)
-
-
-def _sync_database_url() -> str | None:
-    url = os.environ.get("DATABASE_URL", "").strip()
-    if not url:
-        return None
-    if "+asyncpg" in url:
-        return url.replace("postgresql+asyncpg", "postgresql", 1)
-    return url
 
 
 def record_scrape_audit_event_sync(
@@ -34,7 +24,9 @@ def record_scrape_audit_event_sync(
     celery_task_id: str | None = None,
     extra: dict[str, Any] | None = None,
 ) -> None:
-    dsn = _sync_database_url()
+    from axiom_worker.db_sync import get_psycopg_dsn
+
+    dsn = get_psycopg_dsn()
     if not dsn:
         return
     try:

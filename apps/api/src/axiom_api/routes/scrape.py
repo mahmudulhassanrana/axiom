@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 
 import requests
@@ -13,7 +14,7 @@ from fastapi.responses import JSONResponse
 from kombu.exceptions import OperationalError
 from playwright.sync_api import Error as PlaywrightError
 
-from axiom_api.celery_client import get_celery_app
+from axiom_api.celery_client import AXIOM_QUEUE, get_celery_app
 from axiom_api.core.compliance_http import compliance_http_exception
 from axiom_api.core.public_messages import client_safe_detail, format_upstream_failure
 from axiom_api.db.models.user import User
@@ -22,6 +23,7 @@ from axiom_api.schemas.scrape import ScrapeQueuedResponse, ScrapeRequest
 from axiom_api.services.scrape_audit import record_scrape_audit_event
 
 router = APIRouter(tags=["scrape"])
+logger = logging.getLogger("axiom_api.scrape")
 
 _html_extractor = HtmlExtractor()
 _playwright_extractor = PlaywrightExtractor()
@@ -110,6 +112,7 @@ async def scrape(
                     "audit_correlation_id": str(correlation_id),
                     "compliance_preverified": True,
                 },
+                queue=AXIOM_QUEUE,
             )
         except OperationalError as exc:
             raise HTTPException(
@@ -133,6 +136,11 @@ async def scrape(
             celery_task_id=async_result.id,
         )
         body = ScrapeQueuedResponse(task_id=async_result.id)
+        logger.info(
+            "API response sent: scrape async queued task_id=%s url=%s",
+            async_result.id,
+            url_str,
+        )
         return JSONResponse(
             status_code=status.HTTP_202_ACCEPTED,
             content=body.model_dump(mode="json"),
@@ -237,5 +245,10 @@ async def scrape(
         step="fetch",
         outcome="success",
         http_status=doc.http_status,
+    )
+    logger.info(
+        "API response sent: scrape sync 200 url=%s http_status=%s",
+        url_str,
+        doc.http_status,
     )
     return doc

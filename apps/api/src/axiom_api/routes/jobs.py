@@ -15,11 +15,11 @@ from axiom_compliance.exceptions import ComplianceError
 from axiom_compliance.lists import hostname_for_url
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from kombu.exceptions import OperationalError
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from axiom_api.celery_client import get_celery_app
+from axiom_api.celery_client import AXIOM_QUEUE, get_celery_app
 from axiom_api.core.compliance_http import compliance_http_exception
 from axiom_api.core.public_messages import client_safe_detail
 from axiom_api.db.deps import get_db
@@ -156,6 +156,11 @@ async def create_job(
     session.add(run)
     await session.flush()
 
+    # Commit before Celery so the worker's psycopg connection can see job + run (no uncommitted-row race).
+    await session.commit()
+    await session.refresh(job)
+    await session.refresh(run)
+
     celery_app = get_celery_app()
     try:
         async_result = celery_app.send_task(
@@ -172,9 +177,13 @@ async def create_job(
                 "run_id": str(run.id),
                 "max_retries_override": body.max_retries,
             },
+            queue=AXIOM_QUEUE,
         )
     except OperationalError as exc:
-        await session.rollback()
+        job.status = "failed"
+        run.status = "failed"
+        run.error_message = "Celery broker unavailable"
+        await session.commit()
         raise HTTPException(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=client_safe_detail(
@@ -189,8 +198,15 @@ async def create_job(
     job.celery_task_id = async_result.id
     job.status = "queued"
     run.status = "queued"
+    await session.commit()
+    await session.refresh(job)
+    await session.refresh(run)
     logger.info(
-        "job.created",
+        "Job created job_id=%s run_id=%s celery_task_id=%s url=%s",
+        job.id,
+        run.id,
+        async_result.id,
+        url_str,
         extra={
             "event": "job_created",
             "job_id": str(job.id),
@@ -199,6 +215,19 @@ async def create_job(
             "celery_task_id": async_result.id,
             "url": url_str,
         },
+    )
+    await record_scrape_audit_event(
+        correlation_id=correlation_id,
+        source="api",
+        user_id=user.id,
+        organization_id=user.organization_id,
+        url=url_str,
+        host=hostname_for_url(url_str) or "invalid",
+        engine=body.engine,
+        step="queue",
+        outcome="accepted",
+        celery_task_id=async_result.id,
+        extra={"job_id": str(job.id), "run_id": str(run.id)},
     )
     return job
 
@@ -221,7 +250,9 @@ async def job_results(
         .where(Run.job_id == job_id)
         .order_by(ExtractedData.created_at.desc()),
     )
-    return list(result.scalars().all())
+    rows = list(result.scalars().all())
+    logger.info("API response sent: job_results job_id=%s rows=%s", job_id, len(rows))
+    return rows
 
 
 @router.get(
@@ -238,7 +269,8 @@ async def get_job(
     result = await session.execute(
         select(Job)
         .options(selectinload(Job.runs).selectinload(Run.extracted_data))
-        .where(Job.id == job_id, Job.organization_id == user.organization_id),
+        .where(Job.id == job_id, Job.organization_id == user.organization_id)
+        .execution_options(populate_existing=True),
     )
     job = result.scalar_one_or_none()
     if job is None:
@@ -275,14 +307,20 @@ async def job_logs(
     user: Annotated[User, Depends(get_current_user_bearer)],
     limit: int = Query(default=100, ge=1, le=500),
 ) -> list[ScrapeAuditEvent]:
-    await _get_job_for_org(session, job_id, user.organization_id)
+    job = await _get_job_for_org(session, job_id, user.organization_id)
+    org = ScrapeAuditEvent.organization_id == user.organization_id
+    by_extra = and_(
+        org,
+        ScrapeAuditEvent.extra.is_not(None),
+        ScrapeAuditEvent.extra.contains({"job_id": str(job_id)}),
+    )
+    if job.celery_task_id:
+        filter_expr = or_(by_extra, and_(org, ScrapeAuditEvent.celery_task_id == job.celery_task_id))
+    else:
+        filter_expr = by_extra
     result = await session.execute(
         select(ScrapeAuditEvent)
-        .where(
-            ScrapeAuditEvent.organization_id == user.organization_id,
-            ScrapeAuditEvent.extra.is_not(None),
-            ScrapeAuditEvent.extra.contains({"job_id": str(job_id)}),
-        )
+        .where(filter_expr)
         .order_by(ScrapeAuditEvent.created_at.desc())
         .limit(limit),
     )

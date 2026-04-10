@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import uuid
 from typing import Any
 from uuid import UUID
@@ -24,7 +23,6 @@ from axiom_worker.job_status import (
     claim_run_for_scrape,
     load_completed_scrape_document,
     mark_failed,
-    mark_running,
     mark_succeeded,
 )
 from axiom_worker.scrape_audit import record_scrape_audit_event_sync
@@ -62,10 +60,6 @@ def _job_audit_extra(
     if schedule_id:
         out["schedule_id"] = schedule_id
     return out
-
-
-def _has_database_url() -> bool:
-    return bool((os.environ.get("DATABASE_URL") or "").strip())
 
 
 def _max_retries_cap(self: Task) -> int:
@@ -174,6 +168,14 @@ def scrape_task(
             },
         )
 
+    logger.info(
+        "Worker started scrape celery_task_id=%s job_id=%s run_id=%s url=%s",
+        task_id,
+        job_id,
+        run_id,
+        url,
+    )
+
     ctx = ScrapeComplianceContext(
         user_id=user_id,
         organization_id=organization_id,
@@ -235,11 +237,10 @@ def scrape_task(
                 extra={"run_id": str(run_uuid), "celery_task_id": task_id},
             )
             return {}
-        elif not _has_database_url():
-            mark_running(run_uuid, job_uuid)
 
     html_ex, pw_ex = _select_extractors(settings)
 
+    logger.info("Scraping started url=%s engine=%s", url, engine)
     try:
         if engine == "html_requests":
             doc = html_ex.extract(url, include_html=include_html)
@@ -354,7 +355,7 @@ def scrape_task(
             "scrape_task.empty_text",
             extra={"axiom_url": url, "celery_task_id": task_id},
         )
-        raise ValueError(empty_msg)
+        return doc.to_json_dict()
 
     record_scrape_audit_event_sync(
         correlation_id=cid,
@@ -369,6 +370,13 @@ def scrape_task(
         http_status=doc.http_status,
         celery_task_id=task_id,
         extra=j_extra,
+    )
+
+    logger.info(
+        "Scraping success url=%s http_status=%s text_len=%s",
+        url,
+        doc.http_status,
+        len((doc.text or "").strip()),
     )
 
     payload = doc.to_json_dict()

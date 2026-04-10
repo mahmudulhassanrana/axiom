@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import uuid
 from datetime import datetime, timezone
 from typing import Any
@@ -16,18 +15,10 @@ from axiom_compliance import ComplianceSettings, ScrapeComplianceContext, run_co
 from axiom_compliance.exceptions import ComplianceError
 from axiom_compliance.lists import hostname_for_url
 from axiom_worker.celery_app import app as celery_app
+from axiom_worker.db_sync import get_psycopg_dsn
 from axiom_worker.scrape_audit import record_scrape_audit_event_sync
 
 logger = logging.getLogger(__name__)
-
-
-def _dsn() -> str | None:
-    url = os.environ.get("DATABASE_URL", "").strip()
-    if not url:
-        return None
-    if "+asyncpg" in url:
-        return url.replace("postgresql+asyncpg", "postgresql", 1)
-    return url
 
 
 def _next_utc(cron_expression: str) -> datetime:
@@ -42,7 +33,7 @@ def tick_schedules() -> dict[str, Any]:
 
     Creates a Job + Run per schedule tick and dispatches ``axiom.scrape``.
     """
-    dsn = _dsn()
+    dsn = get_psycopg_dsn()
     if not dsn:
         logger.warning("tick_schedules.skip_no_database_url")
         return {"processed": 0}
@@ -66,16 +57,14 @@ def tick_schedules() -> dict[str, Any]:
 
         for row in rows:
             try:
-                # One row failure must not abort the batch or poison the connection (savepoint).
-                with conn.transaction():
-                    _dispatch_one(conn, row)
+                _dispatch_one(conn, row)
                 processed += 1
             except Exception:
+                conn.rollback()
                 logger.exception(
                     "tick_schedules.dispatch_failed",
                     extra={"schedule_id": str(row["id"])},
                 )
-        conn.commit()
 
     logger.info("tick_schedules.done", extra={"processed": processed})
     return {"processed": processed}
@@ -92,12 +81,14 @@ def _dispatch_one(conn: psycopg.Connection, row: dict[str, Any]) -> None:
     if user_id is None:
         logger.warning("tick_schedules.skip_no_user", extra={"schedule_id": str(schedule_id)})
         _bump_schedule(conn, schedule_id, cron_expression)
+        conn.commit()
         return
 
     url_str = str(payload.get("url") or "")
     if not url_str:
         logger.warning("tick_schedules.skip_no_url", extra={"schedule_id": str(schedule_id)})
         _bump_schedule(conn, schedule_id, cron_expression)
+        conn.commit()
         return
 
     engine = payload.get("engine") or "html_requests"
@@ -138,6 +129,7 @@ def _dispatch_one(conn: psycopg.Connection, row: dict[str, Any]) -> None:
             extra={"schedule_id": str(schedule_id)},
         )
         _bump_schedule(conn, schedule_id, cron_expression)
+        conn.commit()
         return
 
     job_id = uuid.uuid4()
@@ -192,6 +184,7 @@ def _dispatch_one(conn: psycopg.Connection, row: dict[str, Any]) -> None:
             "schedule_id": str(schedule_id),
             "max_retries_override": max_retries,
         },
+        queue=str(celery_app.conf.task_default_queue),
     )
 
     with conn.cursor() as cur:
@@ -209,6 +202,7 @@ def _dispatch_one(conn: psycopg.Connection, row: dict[str, Any]) -> None:
         )
 
     _bump_schedule(conn, schedule_id, cron_expression)
+    conn.commit()
 
 
 def _bump_schedule(conn: psycopg.Connection, schedule_id: Any, cron_expression: str) -> None:

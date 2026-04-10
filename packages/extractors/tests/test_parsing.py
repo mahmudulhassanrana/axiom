@@ -54,3 +54,24 @@ def test_build_document_include_html() -> None:
     )
     assert doc.html is not None
     assert "<p>x</p>" in doc.html
+
+
+def test_build_document_js_shell_uses_head_fallback() -> None:
+    """SPA shells often have empty body text but rich <title> and meta descriptions."""
+    html = """<!doctype html>
+<html lang="en"><head>
+  <title>My Portfolio</title>
+  <meta name="description" content="Engineer building web apps.">
+  <meta property="og:description" content="Open graph summary.">
+</head><body><div id="app"></div></body></html>"""
+    doc = build_document_from_html(
+        url="https://example.com/",
+        final_url="https://example.com/",
+        http_status=200,
+        html=html,
+        extractor_kind="html_requests",
+        include_html=False,
+    )
+    assert "My Portfolio" in doc.text
+    assert "Engineer building web apps" in doc.text
+    assert "Open graph summary" in doc.text

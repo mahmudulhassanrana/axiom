@@ -1,22 +1,14 @@
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any, Literal
 from uuid import UUID
+
+from axiom_worker.db_sync import get_psycopg_dsn
 
 logger = logging.getLogger(__name__)
 
 ClaimOutcome = Literal["claimed", "completed", "failed", "already_running"]
-
-
-def _dsn() -> str | None:
-    url = os.environ.get("DATABASE_URL", "").strip()
-    if not url:
-        return None
-    if "+asyncpg" in url:
-        return url.replace("postgresql+asyncpg", "postgresql", 1)
-    return url
 
 
 def claim_run_for_scrape(run_id: UUID, job_id: UUID, *, celery_retries: int) -> ClaimOutcome:
@@ -25,14 +17,23 @@ def claim_run_for_scrape(run_id: UUID, job_id: UUID, *, celery_retries: int) -> 
     If ``running`` and ``celery_retries == 0``, treat as duplicate parallel task (skip).
     If ``running`` and retries > 0, allow the same task to continue after a transient failure.
     """
-    dsn = _dsn()
+    dsn = get_psycopg_dsn()
     if not dsn:
-        return "claimed"
+        logger.error(
+            "job_status.no_database_url",
+            extra={"run_id": str(run_id), "job_id": str(job_id)},
+        )
+        raise RuntimeError(
+            "DATABASE_URL is not set; worker cannot persist job/run status. "
+            "Use the same DATABASE_URL as the API (see repo root .env)."
+        )
     try:
         import psycopg
-    except ImportError:
-        logger.warning("job_status.psycopg_missing")
-        return "claimed"
+    except ImportError as exc:
+        logger.error("job_status.psycopg_missing", extra={"run_id": str(run_id)})
+        raise RuntimeError(
+            "psycopg is required for job status updates; install axiom-worker dependencies."
+        ) from exc
     try:
         conn = psycopg.connect(dsn, connect_timeout=5)
         try:
@@ -40,7 +41,9 @@ def claim_run_for_scrape(run_id: UUID, job_id: UUID, *, celery_retries: int) -> 
                 cur.execute(
                     """
                     UPDATE runs
-                    SET status = 'running', started_at = COALESCE(started_at, NOW())
+                    SET status = 'running',
+                        started_at = COALESCE(started_at, NOW()),
+                        updated_at = NOW()
                     WHERE id = %s AND status IN ('pending', 'queued')
                     RETURNING id
                     """,
@@ -49,10 +52,15 @@ def claim_run_for_scrape(run_id: UUID, job_id: UUID, *, celery_retries: int) -> 
                 row = cur.fetchone()
                 if row:
                     cur.execute(
-                        "UPDATE jobs SET status = 'running' WHERE id = %s",
+                        "UPDATE jobs SET status = 'running', updated_at = NOW() WHERE id = %s",
                         (str(job_id),),
                     )
                     conn.commit()
+                    logger.info(
+                        "Updating job to running job_id=%s run_id=%s",
+                        job_id,
+                        run_id,
+                    )
                     return "claimed"
                 cur.execute("SELECT status FROM runs WHERE id = %s", (str(run_id),))
                 st_row = cur.fetchone()
@@ -77,12 +85,12 @@ def claim_run_for_scrape(run_id: UUID, job_id: UUID, *, celery_retries: int) -> 
             conn.close()
     except Exception:
         logger.exception("job_status.claim_run_failed", extra={"run_id": str(run_id)})
-        return "claimed"
+        raise
 
 
 def load_completed_scrape_document(run_id: UUID) -> dict[str, Any] | None:
     """Return stored extraction JSON for a completed run, or ``None``."""
-    dsn = _dsn()
+    dsn = get_psycopg_dsn()
     if not dsn:
         return None
     try:
@@ -132,94 +140,119 @@ def load_completed_scrape_document(run_id: UUID) -> dict[str, Any] | None:
 
 def mark_running(run_id: UUID, job_id: UUID) -> None:
     """Legacy path: ensure run/job marked running (used if claim skipped without DB)."""
-    dsn = _dsn()
+    dsn = get_psycopg_dsn()
     if not dsn:
-        return
+        logger.error(
+            "job_status.mark_running_no_database_url",
+            extra={"run_id": str(run_id), "job_id": str(job_id)},
+        )
+        raise RuntimeError("DATABASE_URL is not set; cannot mark job running.")
     try:
         import psycopg
-    except ImportError:
-        logger.warning("job_status.psycopg_missing")
-        return
+    except ImportError as exc:
+        raise RuntimeError("psycopg is required for job status updates.") from exc
     try:
         conn = psycopg.connect(dsn, connect_timeout=5)
         try:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    UPDATE runs SET status = 'running', started_at = COALESCE(started_at, NOW())
+                    UPDATE runs SET status = 'running',
+                        started_at = COALESCE(started_at, NOW()),
+                        updated_at = NOW()
                     WHERE id = %s
                     """,
                     (str(run_id),),
                 )
                 cur.execute(
-                    "UPDATE jobs SET status = 'running' WHERE id = %s",
+                    "UPDATE jobs SET status = 'running', updated_at = NOW() WHERE id = %s",
                     (str(job_id),),
                 )
             conn.commit()
+            logger.info("Updating job to running job_id=%s run_id=%s", job_id, run_id)
         finally:
             conn.close()
     except Exception:
         logger.exception("job_status.mark_running_failed", extra={"run_id": str(run_id)})
+        raise
 
 
 def mark_succeeded(run_id: UUID, job_id: UUID, metrics: dict[str, Any]) -> None:
-    dsn = _dsn()
+    dsn = get_psycopg_dsn()
     if not dsn:
-        return
+        logger.error(
+            "job_status.mark_succeeded_no_database_url",
+            extra={"run_id": str(run_id), "job_id": str(job_id)},
+        )
+        raise RuntimeError("DATABASE_URL is not set; cannot mark job completed.")
     try:
         import psycopg
         from psycopg.types.json import Json
-    except ImportError:
-        logger.warning("job_status.psycopg_missing")
-        return
+    except ImportError as exc:
+        raise RuntimeError("psycopg is required for job status updates.") from exc
     try:
         conn = psycopg.connect(dsn, connect_timeout=5)
         try:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    UPDATE runs SET status = 'completed', completed_at = NOW(), metrics = %s
+                    UPDATE runs SET status = 'completed', completed_at = NOW(), metrics = %s,
+                        updated_at = NOW()
                     WHERE id = %s
                     """,
                     (Json(metrics), str(run_id)),
                 )
                 cur.execute(
-                    "UPDATE jobs SET status = 'completed' WHERE id = %s",
+                    "UPDATE jobs SET status = 'completed', updated_at = NOW() WHERE id = %s",
                     (str(job_id),),
                 )
             conn.commit()
+            logger.info("Updating job to completed job_id=%s run_id=%s", job_id, run_id)
         finally:
             conn.close()
     except Exception:
         logger.exception("job_status.mark_succeeded_failed", extra={"run_id": str(run_id)})
+        raise
 
 
 def mark_failed(run_id: UUID, job_id: UUID, error: str) -> None:
-    dsn = _dsn()
+    dsn = get_psycopg_dsn()
     if not dsn:
+        logger.error(
+            "job_status.mark_failed_no_database_url",
+            extra={"run_id": str(run_id), "job_id": str(job_id)},
+        )
         return
     try:
         import psycopg
-    except ImportError:
-        logger.warning("job_status.psycopg_missing")
-        return
+    except ImportError as exc:
+        logger.error("job_status.mark_failed_psycopg_missing", extra={"run_id": str(run_id)})
+        raise RuntimeError("psycopg is required for job status updates.") from exc
     try:
         conn = psycopg.connect(dsn, connect_timeout=5)
         try:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    UPDATE runs SET status = 'failed', completed_at = NOW(), error_message = %s
+                    UPDATE runs SET status = 'failed', completed_at = NOW(), error_message = %s,
+                        updated_at = NOW()
                     WHERE id = %s
                     """,
                     (error, str(run_id)),
                 )
                 cur.execute(
-                    "UPDATE jobs SET status = 'failed' WHERE id = %s",
+                    "UPDATE jobs SET status = 'failed', updated_at = NOW() WHERE id = %s",
                     (str(job_id),),
                 )
             conn.commit()
+            logger.info(
+                "Job failed job_id=%s run_id=%s error=%s",
+                job_id,
+                run_id,
+                (error[:500] + "…") if len(error) > 500 else error,
+            )
         finally:
             conn.close()
     except Exception:
         logger.exception("job_status.mark_failed_failed", extra={"run_id": str(run_id)})
+        raise

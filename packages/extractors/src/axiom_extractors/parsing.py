@@ -34,6 +34,36 @@ def visible_text_from_soup(soup: BeautifulSoup) -> str:
     return normalize_whitespace(raw)
 
 
+def _fallback_text_from_head(soup: BeautifulSoup, title: str | None) -> str:
+    """
+    When the body has no visible text (common for JS app shells), use title and
+    standard meta descriptions so ``html_requests`` still captures page intent.
+    """
+    parts: list[str] = []
+    seen: set[str] = set()
+
+    def add_part(raw: str) -> None:
+        n = normalize_whitespace(raw.strip())
+        if n and n not in seen:
+            seen.add(n)
+            parts.append(n)
+
+    if title:
+        add_part(title)
+
+    for attrs in (
+        {"name": "description"},
+        {"property": "og:description"},
+        {"name": "twitter:description"},
+        {"property": "twitter:description"},
+    ):
+        m = soup.find("meta", attrs=attrs)
+        if m and m.get("content"):
+            add_part(str(m["content"]))
+
+    return "\n\n".join(parts)
+
+
 def _page_title(soup: BeautifulSoup) -> str | None:
     if soup.title and soup.title.string:
         return normalize_whitespace(soup.title.string.strip()) or None
@@ -131,6 +161,8 @@ def build_document_from_html(
     title = _page_title(soup)
     language = _html_language(soup)
     text = visible_text_from_soup(soup)
+    if not text.strip():
+        text = _fallback_text_from_head(soup, title)
     links = extract_links_from_soup(soup, base_url=base)
     meta = dict(metadata or {})
     meta.setdefault("meta_tags", _meta_tags(soup))

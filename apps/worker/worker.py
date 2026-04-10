@@ -17,12 +17,32 @@ import time
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent
+_REPO = _ROOT.parent.parent
+
 _SRC = _ROOT / "src"
 
 if _SRC.is_dir() and str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-from axiom_worker.env import load_worker_environment  # noqa: E402
+from axiom_worker.env import (  # noqa: E402
+    ensure_database_url_from_env_files,
+    load_worker_environment,
+)
+
+ensure_database_url_from_env_files()
+
+try:
+    from dotenv import load_dotenv
+
+    for _env_path in (
+        _REPO / ".env",
+        _REPO / "apps" / "api" / ".env",
+        _ROOT / ".env",
+    ):
+        if _env_path.is_file():
+            load_dotenv(_env_path, override=True)
+except ImportError:
+    pass
 
 load_worker_environment()
 

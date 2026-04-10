@@ -43,6 +43,7 @@ def test_scrape_async_enqueues_celery_task() -> None:
     assert st_kw["engine"] == "html_requests"
     assert st_kw["include_html"] is False
     assert gc.return_value.send_task.call_args.args[0] == "axiom.scrape"
+    assert gc.return_value.send_task.call_args.kwargs.get("queue") == "axiom"
 
 
 def test_scrape_sync_html_uses_extractor() -> None:
