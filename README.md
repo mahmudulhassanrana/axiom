@@ -1,120 +1,285 @@
 # Axiom
 
-Compliant, rate-limited, multi-format scraping and ingestion platform.
+**Axiom** is a full-stack SaaS-style web scraping platform: a **Next.js** dashboard and **FastAPI** API create **jobs**, a **Celery** worker fetches and extracts pages, and **PostgreSQL** stores jobs, runs, and extracted data. **Redis** backs the Celery broker and optional compliance rate limits.
 
-## Monorepo layout
+---
 
+## 📌 Project overview
+
+Axiom lets teams submit URLs as **scrape jobs**, track **status** end-to-end (`queued` → `running` → `completed` / `failed`), and retrieve **normalized text and metadata** from stored results. Processing is **asynchronous** by default so the API stays responsive while workers handle I/O-heavy fetches.
+
+**Capabilities**
+
+| Area | What you get |
+|------|----------------|
+| **Job-based scraping** | One URL per job (with runs and extracted rows in Postgres). |
+| **Async worker processing** | Celery tasks on the `axiom` queue; retries for transient errors. |
+| **Result storage** | `extracted_data` linked to runs and jobs; JSON-friendly payloads. |
+| **Dashboard UI** | Next.js app for auth-aware flows and job visibility. |
+
+---
+
+## 🏗 Architecture
+
+```text
+┌─────────────┐     HTTPS / JSON     ┌─────────────┐     enqueue      ┌─────────────┐
+│  Next.js    │ ──────────────────► │   FastAPI   │ ───────────────► │    Redis    │
+│  (apps/web) │                     │ (apps/api)  │                  │   (broker)  │
+└─────────────┘                     └──────┬──────┘                  └──────▲──────┘
+                                           │                               │
+                                           │ SQLAlchemy                    │ consume
+                                           ▼                               │
+                                    ┌─────────────┐                 ┌──────┴──────┐
+                                    │ PostgreSQL  │ ◄── status /    │   Celery    │
+                                    │             │     inserts     │   worker    │
+                                    └─────────────┘                 └─────────────┘
 ```
-apps/
-  api/       FastAPI service
-  web/       Next.js application
-  worker/    Celery workers (Redis broker)
-packages/
-  shared/              Shared TypeScript utilities and constants
-  typescript-config/   Base TypeScript configs for apps
-  extractors/          Python extractors (requests/BS4 + Playwright)
-docs/                  Product and engineering documentation
-infra/                 Docker Compose and future infrastructure code
-scripts/               Local run helpers (API, worker, web)
-```
 
-## Prerequisites
+- **Frontend (Next.js)** → calls the **API (FastAPI)** with JWT (or API keys where supported).
+- **API** → persists **jobs** and **runs**, enqueues **`axiom.scrape`** via **Redis** (Kombu/Celery).
+- **Worker (Celery)** → claims runs, scrapes with **HTML requests** or **Playwright**, writes **`extracted_data`**, updates job/run status (sync DB access aligned with the same `DATABASE_URL`).
+- **PostgreSQL** → source of truth for users, orgs, jobs, runs, extractions, audits, schedules.
+- **Redis** → Celery broker/result backend defaults; compliance can use Redis for per-domain limits.
+- **SQLAlchemy** → async ORM in the API (`asyncpg` driver).
+- **JWT** → Bearer access tokens from `/auth/login` and `/auth/register`.
 
-- **Node.js** 20+ and **npm** (or **pnpm** 9 with `corepack enable`)
-- **Python** 3.11+ (API, worker, and `packages/extractors`)
-- **PostgreSQL** and **Redis** on the host (or only Redis/Postgres via Docker)
+---
 
-## Local development without Docker (full stack on the host)
+## ✨ Features
 
-1. **PostgreSQL and Redis** — start services locally (example: `brew services start postgresql redis` on macOS), or run only databases:
+- 🔐 **Authentication** — Email/password, JWT access tokens, optional API keys (`/auth/*`).
+- 📋 **Job creation & tracking** — `POST /jobs`, `GET /jobs`, `GET /jobs/{id}` with runs and payloads.
+- 🕷 **Scraping engines** — `html_requests` (default) and `playwright`; compliance hooks (robots, lists, rate limits).
+- ⚙️ **Worker queue** — Celery task `axiom.scrape`, dedicated queue, retries with backoff.
+- 📊 **Job lifecycle** — `queued` → `running` → `completed` / `failed` mirrored on jobs and runs.
+- 💾 **Data storage** — Extracted text, title, links, metadata in Postgres; audit events for operations.
+- 🖥 **Dashboard UI** — Next.js app under `apps/web` (login, settings, sources, scrape flows).
+- 📅 **Schedules** — Cron-style job schedules API (`/schedules`) and beat-driven ticks (worker).
+- 📤 **Exports** — Download endpoints under `/exports` (run/job-oriented exports).
+- 🩺 **Health** — `/health` and related checks for load balancers.
 
-   ```bash
-   docker compose -f infra/docker-compose.yml up -d postgres redis
-   ```
+---
 
-2. **Environment**
+## 📁 Project structure
 
-   - API: copy [`apps/api/.env.example`](apps/api/.env.example) to `apps/api/.env` and set `DATABASE_URL`, Redis/Celery URLs, and `JWT_SECRET_KEY`.
-   - Web: copy [`apps/web/.env.example`](apps/web/.env.example) to `apps/web/.env.local` (optional; defaults to `http://localhost:8000`).
-   - Alternatively, copy the combined [`.env.example`](.env.example) at the repo root to `.env` for a single file used when tooling loads env from the root.
+| Path | Role |
+|------|------|
+| `apps/web` | **Next.js 15** frontend (React 19, Tailwind). |
+| `apps/api` | **FastAPI** app (`main.py` → `create_app()`), Alembic migrations, OpenAPI at `/docs`. |
+| `apps/worker` | **Celery** worker (`celery -A worker worker`); tasks under `axiom_worker.tasks`. |
+| `packages/compliance` | Shared compliance (robots, domain lists, Redis rate limiting). |
+| `packages/extractors` | HTML / Playwright extractors and parsing helpers. |
+| `packages/exporters` | Export helpers used by the API. |
+| `packages/shared` | Shared TS types/utilities for the web app. |
+| `packages/testkit` | Test fixtures / dev utilities. |
+| `packages/typescript-config` | Shared **TypeScript** config. |
+| `infra/` | Docker Compose and supporting infra (e.g. Redis). |
+| `scripts/` | Helper scripts (Redis, worker, etc.). |
 
-3. **API (FastAPI)**
+---
 
-   ```bash
-   cd apps/api
-   python -m venv .venv && source .venv/bin/activate
-   pip install -r requirements.txt
-   alembic upgrade head
-   uvicorn main:app --reload
-   ```
+## 🚀 Setup
 
-   Open [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs). If PostgreSQL is not up yet, the API still starts; connectivity is logged at startup.
+### A. Requirements
 
-4. **Worker (Celery)**
+- **Python** 3.11+
+- **Node.js** 20+ (LTS recommended)
+- **PostgreSQL** (local or Docker)
+- **Redis** (broker for Celery)
 
-   ```bash
-   cd apps/worker
-   python -m venv .venv && source .venv/bin/activate
-   pip install -r requirements.txt
-   celery -A worker worker --loglevel=info
-   ```
+### B. Database
 
-   Default broker: `redis://localhost:6379/0` (override with `CELERY_BROKER_URL` / `CELERY_RESULT_BACKEND`).
-
-5. **Web (Next.js)**
-
-   Install **from the repository root** (workspaces + [`/.npmrc`](.npmrc); avoids an npm 10 bug when installing only inside `apps/web`):
-
-   ```bash
-   npm install
-   cd apps/web && npm run dev
-   ```
-
-   Open [http://localhost:3000](http://localhost:3000). Use **Settings** to paste a JWT from `POST /auth/login`, then **Scrape** to call `POST /scrape`.
-
-### Run scripts (from repository root)
-
-| Command | Description |
-| --- | --- |
-| `./scripts/run-api.sh` | `uvicorn main:app --reload` in `apps/api` |
-| `./scripts/run-worker.sh` | `celery -A worker worker --loglevel=info` in `apps/worker` |
-| `./scripts/run-redis.sh` | Start Redis (`6379`) via Docker Compose for local Celery/API |
-| `./scripts/run-web.sh` | `npm run dev` in `apps/web` |
-
-Make scripts executable once: `chmod +x scripts/run-*.sh`.
-
-### pnpm (optional)
-
-From the repo root: `pnpm install` and `pnpm dev:web` still work; `apps/web` uses `file:` links compatible with both npm and pnpm.
-
-### npm: `Cannot read properties of null (reading 'matches')`
-
-That comes from npm’s arborist when deduping **workspace** + **`file:`** dependencies. The repo root [`.npmrc`](.npmrc) sets `install-strategy=nested` to avoid it. Run **`npm install` from the repo root**, not only under `apps/web`.
-
-## Quick start (Docker — full stack)
-
-From the repository root:
+Create a database named **`axiom`**. Example (local PostgreSQL on port **5435**):
 
 ```bash
-docker compose -f infra/docker-compose.yml up --build
+createdb -h 127.0.0.1 -p 5435 -U postgres axiom
 ```
 
-Then open [http://localhost:3000](http://localhost:3000) (web) and [http://localhost:8000/docs](http://localhost:8000/docs) (API). See [`infra/README.md`](infra/README.md) for ports and build args.
+Run API migrations from `apps/api` (Alembic) after installing deps:
 
-## Scripts (root, pnpm)
+```bash
+cd apps/api && source .venv/bin/activate && alembic upgrade head
+```
 
-| Command | Description |
-| --- | --- |
-| `pnpm dev:web` | Next.js dev server |
-| `pnpm build:web` | Production build |
-| `pnpm lint:web` | ESLint (web) |
-| `pnpm format` | Prettier write |
-| `pnpm format:check` | Prettier check |
+### C. Environment variables
 
-## CI
+Copy examples and adjust:
 
-GitHub Actions runs lint/tests for `apps/api`, `apps/worker`, and `apps/web` on push and pull requests to `main`.
+```bash
+cp .env.example .env
+# optional overrides:
+# cp apps/api/.env.example apps/api/.env
+# cp apps/worker/.env.example apps/worker/.env
+```
 
-## License
+**API (async SQLAlchemy)** — use the `asyncpg` scheme (worker reads the same variable and normalizes for `psycopg`):
 
-Proprietary — All rights reserved.
+```env
+DATABASE_URL=postgresql+asyncpg://postgres:@127.0.0.1:5435/axiom
+REDIS_URL=redis://localhost:6379/0
+CELERY_BROKER_URL=redis://localhost:6379/0
+CELERY_RESULT_BACKEND=redis://localhost:6379/0
+JWT_SECRET_KEY=change-me-to-a-long-random-string
+```
+
+If the worker cannot infer the monorepo root, set:
+
+```env
+AXIOM_REPO_ROOT=/absolute/path/to/axiom
+```
+
+### D. Run backend
+
+```bash
+cd apps/api
+python -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -U pip
+pip install -r requirements.txt
+alembic upgrade head
+uvicorn main:app --reload --host 0.0.0.0 --port 8000
+```
+
+API base URL: `http://localhost:8000` · OpenAPI: `http://localhost:8000/docs`
+
+### E. Run worker
+
+From **`apps/worker`** (entry module loads repo root `.env`, then `apps/api/.env`, then `apps/worker/.env`):
+
+```bash
+cd apps/worker
+python3.11 -m venv venv
+source venv/bin/activate
+pip install -U pip && pip install -r requirements.txt
+celery -A worker worker --loglevel=info
+```
+
+Ensure **Redis** is reachable (e.g. `./scripts/run-redis.sh` from the repo root). Optional: `export $(grep -v '^#' ../../.env | xargs)` if you rely on shell-injected vars only.
+
+### F. Run frontend
+
+```bash
+cd apps/web
+npm install
+npm run dev
+```
+
+Set `NEXT_PUBLIC_API_URL` (e.g. in root `.env`) to your API origin, e.g. `http://localhost:8000`.
+
+---
+
+## 🔌 API usage (curl)
+
+Replace `TOKEN` and IDs with values from your environment.
+
+**Register (returns JWT)**
+
+```bash
+curl -sS -X POST http://localhost:8000/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"email":"you@example.com","password":"your-secure-password","full_name":"You"}'
+```
+
+**Login**
+
+```bash
+curl -sS -X POST http://localhost:8000/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"you@example.com","password":"your-secure-password"}'
+```
+
+**Create scrape job**
+
+```bash
+curl -sS -X POST http://localhost:8000/jobs \
+  -H "Authorization: Bearer TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://example.com","engine":"html_requests"}'
+```
+
+**List jobs**
+
+```bash
+curl -sS http://localhost:8000/jobs \
+  -H "Authorization: Bearer TOKEN"
+```
+
+**Get job detail (runs + embedded extraction payloads)**
+
+```bash
+curl -sS http://localhost:8000/jobs/JOB_UUID \
+  -H "Authorization: Bearer TOKEN"
+```
+
+**Get extraction rows for a job**
+
+```bash
+curl -sS http://localhost:8000/jobs/JOB_UUID/results \
+  -H "Authorization: Bearer TOKEN"
+```
+
+**Synchronous scrape (optional, no job row)**
+
+```bash
+curl -sS -X POST "http://localhost:8000/scrape?async=false" \
+  -H "Authorization: Bearer TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"url":"https://example.com","engine":"html_requests"}'
+```
+
+---
+
+## 🔄 Job flow
+
+```text
+User / UI
+   │  JWT
+   ▼
+FastAPI  ──►  validate + compliance (API)  ──►  INSERT job + run (queued)
+   │
+   │  enqueue axiom.scrape (Redis)
+   ▼
+Celery worker  ──►  claim run (running)  ──►  fetch + extract  ──►  INSERT extracted_data
+   │                                                      │
+   └────────────────────────  UPDATE job/run (completed | failed)
+                                      │
+                                      ▼
+                               Dashboard polls GET /jobs/{id}
+```
+
+---
+
+## 🛠 Troubleshooting
+
+| Symptom | Likely cause | What to do |
+|--------|----------------|------------|
+| Worker logs `DATABASE_URL is not set` / status never updates | Worker cannot load DB URL | Put `DATABASE_URL` in **repo root** `.env`; set `AXIOM_REPO_ROOT`; restart worker. |
+| Jobs stuck in **`queued`** | No consumer | Start Celery: `celery -A worker worker`; confirm Redis is up and queue `axiom` exists. |
+| API **503** / DB errors | Postgres down or wrong URL | Check `DATABASE_URL`, port **5435**, and `alembic upgrade head`. |
+| **`ModuleNotFoundError: axiom_api`** | Wrong cwd / path | Run `uvicorn` from `apps/api` so `main.py` adds `src` to `PYTHONPATH`. |
+| **`ImportError` for worker packages | Missing install | `pip install -r requirements.txt` in `apps/worker` from that directory. |
+| CORS errors from browser | Origin not allowed | Set `CORS_ALLOW_ORIGINS` (see `.env.example`). |
+
+---
+
+## 🧪 Development notes
+
+- **Async-first API** — FastAPI + `AsyncSession` for non-blocking I/O; heavy sync work offloaded with `asyncio.to_thread` where needed.
+- **Modular monorepo** — Shared packages under `packages/` keep compliance and extraction logic out of app code.
+- **Scalable shape** — Stateless API, horizontal workers, external broker (Redis) and database (Postgres).
+
+---
+
+## 🗺 Future roadmap
+
+- 🔁 Richer **scheduling** UX and monitoring
+- 📄 **Multi-page crawling** and crawl budgets
+- 📡 **Real-time** job updates (WebSockets / SSE)
+- 🏢 Hardened **multi-tenant SaaS** (billing, quotas, regions)
+- 📦 More **export** formats and bulk download UX
+
+---
+
+## 📄 License
+
+See the repository’s `LICENSE` file if present; otherwise treat usage as defined by the project owner.
