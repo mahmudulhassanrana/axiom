@@ -1,0 +1,9 @@
+# Install from this directory (apps/api):
+#   python -m venv .venv && source .venv/bin/activate  # Windows: .venv\Scripts\activate
+#   pip install -r requirements.txt
+#
+# Installs the API package in editable mode with dev extras (Alembic, pytest, mypy, …).
+# Path dependencies (compliance, extractors, exporters, testkit) resolve via pyproject.toml
+# (file:../../packages/... from this app).
+
+-e .[dev]

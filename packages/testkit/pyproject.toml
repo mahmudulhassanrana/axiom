@@ -1,0 +1,30 @@
+[project]
+name = "axiom-testkit"
+version = "0.1.0"
+description = "Shared pytest fixtures and sample data for the Axiom monorepo"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "pytest>=8.3.0",
+]
+
+[project.entry-points.pytest11]
+axiom_testkit = "axiom_testkit.plugin"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/axiom_testkit"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

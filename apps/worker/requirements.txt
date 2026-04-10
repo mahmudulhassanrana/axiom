@@ -1,0 +1,6 @@
+# Install from this directory (apps/worker):
+#   python3.11 -m venv venv && source venv/bin/activate
+#   pip install -U pip && pip install -r requirements.txt
+# Start Redis on localhost:6379 before running Celery (see README).
+
+-e .[dev]

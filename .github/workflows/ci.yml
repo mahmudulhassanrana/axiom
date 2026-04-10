@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  api:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: axiom
+          POSTGRES_PASSWORD: axiom
+          POSTGRES_DB: axiom
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U axiom -d axiom"
+          --health-interval 4s
+          --health-timeout 5s
+          --health-retries 8
+    env:
+      DATABASE_URL: postgresql+asyncpg://axiom:axiom@localhost:5432/axiom
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: |
+            apps/api/pyproject.toml
+            packages/compliance/pyproject.toml
+            packages/exporters/pyproject.toml
+            packages/extractors/pyproject.toml
+            packages/testkit/pyproject.toml
+      - run: pip install -e ".[dev]"
+      - run: alembic upgrade head
+      - run: ruff check src tests
+      - run: mypy src/axiom_api
+      - run: pytest
+      - run: cd ../../packages/compliance && pip install -e ".[dev]" && ruff check src tests && pytest
+      - run: cd ../../packages/exporters && pip install -e ".[dev]" && ruff check src tests && pytest
+
+  extractors:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/extractors
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: |
+            packages/extractors/pyproject.toml
+            packages/testkit/pyproject.toml
+      - run: pip install -e ".[dev]"
+      - run: playwright install chromium
+      - run: ruff check src tests
+      - run: pytest
+
+  worker:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/worker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+          cache-dependency-path: |
+            apps/worker/pyproject.toml
+            packages/compliance/pyproject.toml
+            packages/extractors/pyproject.toml
+            packages/testkit/pyproject.toml
+      - run: pip install -e ".[dev]"
+      - run: ruff check src tests
+      - run: pytest
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "pnpm"
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @axiom/web lint
+      - run: pnpm --filter @axiom/web build
