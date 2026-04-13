@@ -15,10 +15,20 @@ export function DashboardLayoutClient({ children }: { children: React.ReactNode 
     headerTitle = "Job detail";
   } else if (segments[0] === "jobs") {
     headerTitle = "Jobs";
+  } else if (segments[0] === "search") {
+    headerTitle = "Advanced Search";
   } else if (segments[0] === "runs" && segments[1]) {
     headerTitle = "Run results";
   } else if (segments[0] === "sources") {
-    headerTitle = "Sources";
+    if (segments[1] === "new") {
+      headerTitle = "New source";
+    } else if (segments[2] === "edit") {
+      headerTitle = "Edit source";
+    } else if (segments[1]) {
+      headerTitle = "Source detail";
+    } else {
+      headerTitle = "Sources";
+    }
   } else if (segments[0] === "schedules") {
     headerTitle = "Schedules";
   } else if (segments[0] === "exports") {

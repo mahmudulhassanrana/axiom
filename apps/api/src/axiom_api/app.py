@@ -10,7 +10,7 @@ from axiom_api.core.openapi_tags import OPENAPI_TAGS
 from axiom_api.middleware.body_size_limit import BodySizeLimitMiddleware
 from axiom_api.middleware.security_headers import SecurityHeadersMiddleware
 from axiom_api.middleware.tracing import TracingMiddleware
-from axiom_api.routes import admin, auth, exports, health, jobs, root, runs, schedules, scrape
+from axiom_api.routes import admin, auth, exports, health, job_exports, jobs, realtime, root, runs, schedules, scrape, search, sources
 
 
 def create_app() -> FastAPI:
@@ -51,9 +51,13 @@ def create_app() -> FastAPI:
     app.include_router(auth.router)
     app.include_router(admin.router)
     app.include_router(scrape.router)
+    app.include_router(search.router)
     app.include_router(jobs.router)
+    app.include_router(sources.router)
+    app.include_router(job_exports.router)
     app.include_router(runs.router)
     app.include_router(exports.router)
     app.include_router(schedules.router)
+    app.include_router(realtime.router)
 
     return app

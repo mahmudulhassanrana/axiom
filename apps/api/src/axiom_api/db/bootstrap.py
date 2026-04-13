@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 
 from axiom_api.core.config import get_auto_create_schema, get_seed_default_admin
 from axiom_api.core.security import hash_password
@@ -28,6 +28,62 @@ async def ensure_schema_async() -> None:
     engine = get_engine()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+
+async def ensure_extracted_search_columns_async() -> None:
+    """Add ``country`` / ``city`` / ``published_date`` on ``extracted_data`` if missing (ORM + worker)."""
+    engine = get_engine()
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("ALTER TABLE extracted_data ADD COLUMN IF NOT EXISTS country VARCHAR(255)"),
+            )
+            await conn.execute(
+                text("ALTER TABLE extracted_data ADD COLUMN IF NOT EXISTS city VARCHAR(255)"),
+            )
+            await conn.execute(
+                text("ALTER TABLE extracted_data ADD COLUMN IF NOT EXISTS published_date TIMESTAMPTZ"),
+            )
+    except Exception as exc:
+        logger.warning(
+            "extracted_search_columns_ensure_failed",
+            extra={"event": "extracted_search_columns_ensure_failed", "error": str(exc)},
+        )
+
+
+async def ensure_sources_creator_column_async() -> None:
+    """Align ``sources`` with ORM when DB predates ``created_by_user_id`` (idempotent)."""
+    engine = get_engine()
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(
+                text("ALTER TABLE sources ADD COLUMN IF NOT EXISTS created_by_user_id UUID"),
+            )
+            await conn.execute(
+                text(
+                    """
+                    DO $body$
+                    BEGIN
+                        IF NOT EXISTS (
+                            SELECT 1 FROM pg_constraint
+                            WHERE conname = 'fk_sources_created_by_user_id_users'
+                        ) THEN
+                            ALTER TABLE sources
+                            ADD CONSTRAINT fk_sources_created_by_user_id_users
+                            FOREIGN KEY (created_by_user_id)
+                            REFERENCES users(id)
+                            ON DELETE SET NULL;
+                        END IF;
+                    END
+                    $body$;
+                    """
+                ),
+            )
+    except Exception as exc:
+        logger.warning(
+            "sources_creator_column_ensure_failed",
+            extra={"event": "sources_creator_column_ensure_failed", "error": str(exc)},
+        )
 
 
 async def seed_default_admin_async() -> None:
@@ -68,7 +124,8 @@ async def ensure_schema_and_seed() -> None:
             "schema_create_failed",
             extra={"event": "schema_create_failed", "error": str(exc)},
         )
-        return
+    await ensure_sources_creator_column_async()
+    await ensure_extracted_search_columns_async()
     try:
         await seed_default_admin_async()
     except Exception as exc:

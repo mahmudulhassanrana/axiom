@@ -14,19 +14,17 @@ from axiom_compliance import (
 from axiom_compliance.exceptions import ComplianceError
 from axiom_compliance.lists import hostname_for_url
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from kombu.exceptions import OperationalError
 from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from axiom_api.celery_client import AXIOM_QUEUE, get_celery_app
 from axiom_api.core.compliance_http import compliance_http_exception
-from axiom_api.core.public_messages import client_safe_detail
 from axiom_api.db.deps import get_db
 from axiom_api.db.models.extracted_data import ExtractedData
 from axiom_api.db.models.job import Job
 from axiom_api.db.models.run import Run
 from axiom_api.db.models.scrape_audit_event import ScrapeAuditEvent
+from axiom_api.db.models.source import Source
 from axiom_api.db.models.user import User
 from axiom_api.deps.auth import get_current_user_bearer
 from axiom_api.schemas.jobs import (
@@ -38,7 +36,9 @@ from axiom_api.schemas.jobs import (
     RunDetailPublic,
     RunPublic,
 )
+from axiom_api.services.job_payload_merge import build_merged_job_payload
 from axiom_api.services.scrape_audit import record_scrape_audit_event
+from axiom_api.services.scrape_job_enqueue import enqueue_scrape_job
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 logger = logging.getLogger("axiom_api.jobs")
@@ -91,13 +91,25 @@ async def create_job(
     user: Annotated[User, Depends(get_current_user_bearer)],
 ) -> Job:
     settings = ComplianceSettings.from_env()
-    url_str = str(body.url)
+    source: Source | None = None
+    if body.source_id is not None:
+        source = await session.get(Source, body.source_id)
+        if source is None or source.organization_id != user.organization_id:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Source not found")
+    try:
+        payload = build_merged_job_payload(body, source)
+    except ValueError as exc:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+    url_str = str(payload["url"])
     correlation_id = uuid.uuid4()
     ctx = ScrapeComplianceContext(
         user_id=str(user.id),
         organization_id=str(user.organization_id),
         audit_correlation_id=str(correlation_id),
-        engine=body.engine,
+        engine=str(payload["engine"]),
         source="api",
     )
     try:
@@ -116,103 +128,33 @@ async def create_job(
             organization_id=user.organization_id,
             url=url_str,
             host=hostname_for_url(url_str) or "invalid",
-            engine=body.engine,
+            engine=str(payload["engine"]),
             step="compliance",
             outcome="denied",
             error_message=str(exc),
         )
         raise compliance_http_exception(exc) from exc
 
-    dup = await session.execute(
-        select(Job.id).where(
-            Job.organization_id == user.organization_id,
-            Job.url == url_str,
-            Job.kind == "scrape",
-            Job.status.in_(("pending", "queued", "running")),
-        ).limit(1),
-    )
-    if dup.scalar_one_or_none() is not None:
-        raise HTTPException(
-            status.HTTP_409_CONFLICT,
-            detail="A scrape for this URL is already queued or running for your workspace.",
-        )
-
-    job = Job(
-        organization_id=user.organization_id,
+    job, run = await enqueue_scrape_job(
+        session=session,
+        user=user,
+        payload=payload,
         source_id=body.source_id,
-        kind="scrape",
-        url=url_str,
-        status="pending",
-        payload={
-            "url": url_str,
-            "engine": body.engine,
-            "include_html": body.include_html,
-        },
+        max_retries=body.max_retries,
+        correlation_id=correlation_id,
     )
-    session.add(job)
-    await session.flush()
-
-    run = Run(job_id=job.id, status="pending")
-    session.add(run)
-    await session.flush()
-
-    # Commit before Celery so the worker's psycopg connection can see job + run (no uncommitted-row race).
-    await session.commit()
-    await session.refresh(job)
-    await session.refresh(run)
-
-    celery_app = get_celery_app()
-    try:
-        async_result = celery_app.send_task(
-            "axiom.scrape",
-            kwargs={
-                "url": url_str,
-                "engine": body.engine,
-                "include_html": body.include_html,
-                "user_id": str(user.id),
-                "organization_id": str(user.organization_id),
-                "audit_correlation_id": str(correlation_id),
-                "compliance_preverified": True,
-                "job_id": str(job.id),
-                "run_id": str(run.id),
-                "max_retries_override": body.max_retries,
-            },
-            queue=AXIOM_QUEUE,
-        )
-    except OperationalError as exc:
-        job.status = "failed"
-        run.status = "failed"
-        run.error_message = "Celery broker unavailable"
-        await session.commit()
-        raise HTTPException(
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=client_safe_detail(
-                code="service_unavailable",
-                production_message=(
-                    "The task queue is temporarily unavailable. Please try again later."
-                ),
-                developer_message=f"Celery broker unavailable: {exc}",
-            ),
-        ) from exc
-
-    job.celery_task_id = async_result.id
-    job.status = "queued"
-    run.status = "queued"
-    await session.commit()
-    await session.refresh(job)
-    await session.refresh(run)
     logger.info(
         "Job created job_id=%s run_id=%s celery_task_id=%s url=%s",
         job.id,
         run.id,
-        async_result.id,
+        job.celery_task_id,
         url_str,
         extra={
             "event": "job_created",
             "job_id": str(job.id),
             "run_id": str(run.id),
             "organization_id": str(user.organization_id),
-            "celery_task_id": async_result.id,
+            "celery_task_id": job.celery_task_id,
             "url": url_str,
         },
     )
@@ -223,10 +165,10 @@ async def create_job(
         organization_id=user.organization_id,
         url=url_str,
         host=hostname_for_url(url_str) or "invalid",
-        engine=body.engine,
+        engine=str(payload["engine"]),
         step="queue",
         outcome="accepted",
-        celery_task_id=async_result.id,
+        celery_task_id=job.celery_task_id,
         extra={"job_id": str(job.id), "run_id": str(run.id)},
     )
     return job

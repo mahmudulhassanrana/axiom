@@ -3,7 +3,9 @@ from __future__ import annotations
 import uuid
 from typing import TYPE_CHECKING
 
-from sqlalchemy import ForeignKey, Integer, String, Text
+from datetime import datetime
+
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -39,5 +41,8 @@ class ExtractedData(Base, TimestampMixin):
     payload: Mapped[dict[str, JSONValue]] = mapped_column(JSONB, nullable=False)
     extractor_kind: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    country: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    city: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    published_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     run: Mapped["Run"] = relationship(back_populates="extracted_data")

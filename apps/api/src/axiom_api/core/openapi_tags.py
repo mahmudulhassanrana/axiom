@@ -21,6 +21,14 @@ OPENAPI_TAGS: list[OpenAPITag] = [
         ),
     },
     {"name": "jobs", "description": "Scrape jobs and runs (queued Celery tasks with audit logs)."},
+    {
+        "name": "search",
+        "description": "Advanced search across persisted extracted pages (keyword, location, date range).",
+    },
+    {
+        "name": "sources",
+        "description": "Reusable scrape targets (URLs, crawl settings, optional Celery Beat schedules).",
+    },
     {"name": "runs", "description": "Run details including persisted extracted text and links."},
     {"name": "exports", "description": "Download ExtractedDocument payloads as JSON, CSV, Markdown, or HTML."},
     {

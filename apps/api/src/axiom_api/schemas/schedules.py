@@ -25,6 +25,13 @@ class SchedulePayload(BaseModel):
     engine: Literal["html_requests", "playwright"] = "html_requests"
     include_html: bool = False
     source_id: UUID | None = None
+    crawl_max_pages: int = Field(default=1, ge=1, le=50)
+    crawl_delay_seconds: float = Field(default=1.5, ge=0.5, le=10.0)
+    crawl_jitter_seconds: float = Field(default=0.5, ge=0.0, le=5.0)
+    crawl_allow_external: bool = False
+    crawl_max_external_pages: int = Field(default=25, ge=0, le=50)
+    crawl_max_external_per_host: int = Field(default=5, ge=1, le=20)
+    pre_fetch_jitter_max_seconds: float = Field(default=0.0, ge=0.0, le=2.0)
 
 
 class ScheduleCreateRequest(BaseModel):

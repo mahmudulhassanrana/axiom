@@ -111,6 +111,13 @@ async def scrape(
                     "organization_id": str(_user.organization_id),
                     "audit_correlation_id": str(correlation_id),
                     "compliance_preverified": True,
+                    "crawl_max_pages": payload.crawl_max_pages,
+                    "crawl_delay_seconds": payload.crawl_delay_seconds,
+                    "crawl_jitter_seconds": payload.crawl_jitter_seconds,
+                    "crawl_allow_external": payload.crawl_allow_external,
+                    "crawl_max_external_pages": payload.crawl_max_external_pages,
+                    "crawl_max_external_per_host": payload.crawl_max_external_per_host,
+                    "pre_fetch_jitter_max_seconds": payload.pre_fetch_jitter_max_seconds,
                 },
                 queue=AXIOM_QUEUE,
             )

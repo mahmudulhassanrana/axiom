@@ -47,5 +47,9 @@ app.conf.update(
             "task": "axiom.tick_schedules",
             "schedule": crontab(minute="*"),
         },
+        "tick-source-schedules": {
+            "task": "axiom.tick_source_schedules",
+            "schedule": crontab(minute="*"),
+        },
     },
 )

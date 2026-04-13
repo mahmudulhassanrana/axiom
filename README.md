@@ -95,10 +95,16 @@ Create a database named **`axiom`**. Example (local PostgreSQL on port **5435**)
 createdb -h 127.0.0.1 -p 5435 -U postgres axiom
 ```
 
-Run API migrations from `apps/api` (Alembic) after installing deps:
+Run API migrations from `apps/api` (Alembic) after installing deps. Alembic is a normal API dependency; use a venv **or** call the module explicitly:
 
 ```bash
-cd apps/api && source .venv/bin/activate && alembic upgrade head
+cd apps/api
+source .venv/bin/activate   # if you use a venv (Windows: .venv\Scripts\activate)
+alembic upgrade head
+# if `alembic` is not on PATH, use:
+# python -m alembic upgrade head
+# with uv (from apps/api):
+# uv run alembic upgrade head
 ```
 
 ### C. Environment variables
@@ -136,7 +142,7 @@ python -m venv .venv
 source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -U pip
 pip install -r requirements.txt
-alembic upgrade head
+python -m alembic upgrade head
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
 

@@ -1,10 +1,32 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { FormattedDate } from "@/components/formatted-date";
-import { apiFetch } from "@/lib/api";
-import type { AuditLogEntry, JobDetail } from "@/lib/jobs-types";
+import { apiDownloadBlob, apiFetch, getApiToken } from "@/lib/api";
+import type { AuditLogEntry, ExtractedData, JobDetail } from "@/lib/jobs-types";
+
+function payloadMeta(r: ExtractedData): Record<string, unknown> {
+  const m = r.payload?.metadata;
+  return m && typeof m === "object" && !Array.isArray(m) ? (m as Record<string, unknown>) : {};
+}
+
+function crawlSourceOf(r: ExtractedData): string {
+  if (r.crawl_source) return r.crawl_source;
+  const cs = payloadMeta(r).crawl_source;
+  return cs === "external" ? "external" : "internal";
+}
+
+function groupByPageUrl(rows: ExtractedData[]) {
+  const m = new Map<string, ExtractedData[]>();
+  for (const row of rows) {
+    const key = row.page_url || row.source_url;
+    const arr = m.get(key) ?? [];
+    arr.push(row);
+    m.set(key, arr);
+  }
+  return Array.from(m.entries());
+}
 
 function statusPill(status: string) {
   const base = "inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide";
@@ -23,6 +45,20 @@ function statusPill(status: string) {
   }
 }
 
+function wsUrlForJob(jobId: string): string | null {
+  if (typeof window === "undefined") return null;
+  const token = getApiToken();
+  if (!token) return null;
+  const raw = process.env.NEXT_PUBLIC_API_URL?.trim();
+  let base: string;
+  if (raw) {
+    base = raw.replace(/\/$/, "").replace(/^http/i, (m) => (m.toLowerCase() === "https" ? "wss" : "ws"));
+  } else {
+    base = `ws://${window.location.hostname}:8000`;
+  }
+  return `${base}/ws/jobs/${jobId}?token=${encodeURIComponent(token)}`;
+}
+
 type Props = {
   jobId: string;
 };
@@ -31,17 +67,23 @@ const TERMINAL = new Set(["completed", "failed"]);
 
 export function JobDetailPanel({ jobId }: Props) {
   const [job, setJob] = useState<JobDetail | null>(null);
+  const [results, setResults] = useState<ExtractedData[]>([]);
   const [logs, setLogs] = useState<AuditLogEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [openPages, setOpenPages] = useState<Record<string, boolean>>({});
+  const [textExpanded, setTextExpanded] = useState<Record<string, boolean>>({});
+  const [exporting, setExporting] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setError(null);
     try {
-      const [j, l] = await Promise.all([
+      const [j, r, l] = await Promise.all([
         apiFetch<JobDetail>(`/jobs/${jobId}`),
+        apiFetch<ExtractedData[]>(`/jobs/${jobId}/results`),
         apiFetch<AuditLogEntry[]>(`/jobs/${jobId}/logs`),
       ]);
       setJob(j);
+      setResults(r);
       setLogs(l);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load job");
@@ -57,9 +99,55 @@ export function JobDetailPanel({ jobId }: Props) {
 
   useEffect(() => {
     if (!polling) return;
-    const t = window.setInterval(() => void load(), 3000);
+    const t = window.setInterval(() => void load(), 8000);
     return () => window.clearInterval(t);
   }, [polling, load]);
+
+  useEffect(() => {
+    const url = wsUrlForJob(jobId);
+    if (!url || !polling) return;
+    let ws: WebSocket | null = null;
+    try {
+      ws = new WebSocket(url);
+      ws.onmessage = () => void load();
+      ws.onerror = () => {
+        /* fallback: polling */
+      };
+    } catch {
+      /* ignore */
+    }
+    return () => {
+      ws?.close();
+    };
+  }, [jobId, polling, load]);
+
+  const internalGrouped = useMemo(
+    () => groupByPageUrl(results.filter((r) => crawlSourceOf(r) !== "external")),
+    [results],
+  );
+  const externalGrouped = useMemo(
+    () => groupByPageUrl(results.filter((r) => crawlSourceOf(r) === "external")),
+    [results],
+  );
+
+  async function onExport(kind: "json" | "csv" | "pdf") {
+    setExporting(kind);
+    try {
+      await apiDownloadBlob(`/jobs/${jobId}/export/${kind}`, `job-${jobId}.${kind}`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Export failed");
+    } finally {
+      setExporting(null);
+    }
+  }
+
+  function togglePage(key: string) {
+    setOpenPages((o) => ({ ...o, [key]: !o[key] }));
+  }
+
+  function toggleTextExpand(key: string) {
+    setTextExpanded((o) => ({ ...o, [key]: !o[key] }));
+  }
 
   if (error) {
     return (
@@ -94,6 +182,33 @@ export function JobDetailPanel({ jobId }: Props) {
           </p>
         </div>
         <span className={statusPill(job.status)}>{job.status}</span>
+      </div>
+
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          disabled={!!exporting}
+          onClick={() => void onExport("json")}
+          className="rounded-lg border border-border-subtle px-3 py-1.5 text-xs text-slate-200 hover:border-accent"
+        >
+          {exporting === "json" ? "…" : "Download JSON"}
+        </button>
+        <button
+          type="button"
+          disabled={!!exporting}
+          onClick={() => void onExport("csv")}
+          className="rounded-lg border border-border-subtle px-3 py-1.5 text-xs text-slate-200 hover:border-accent"
+        >
+          {exporting === "csv" ? "…" : "Download CSV"}
+        </button>
+        <button
+          type="button"
+          disabled={!!exporting}
+          onClick={() => void onExport("pdf")}
+          className="rounded-lg border border-border-subtle px-3 py-1.5 text-xs text-slate-200 hover:border-accent"
+        >
+          {exporting === "pdf" ? "…" : "Download PDF"}
+        </button>
       </div>
 
       <section className="rounded-xl border border-border-subtle bg-surface-raised/80 p-5 shadow-glow">
@@ -148,30 +263,187 @@ export function JobDetailPanel({ jobId }: Props) {
         )}
       </section>
 
-      {run && "extracted_data" in run && run.extracted_data.length > 0 ? (
+      {internalGrouped.length > 0 ? (
         <section className="rounded-xl border border-border-subtle bg-surface-raised/80 p-5 shadow-glow">
-          <h2 className="text-sm font-semibold text-slate-200">Extracted</h2>
-          {run.extracted_data.map((row) => (
-            <div key={row.id} className="mt-4 space-y-3 border-t border-border-subtle/80 pt-4 first:mt-0 first:border-t-0 first:pt-0">
-              <div>
-                <div className="text-xs uppercase tracking-wide text-slate-500">Title</div>
-                <div className="mt-1 text-base font-medium text-slate-100">{row.title ?? "—"}</div>
-              </div>
-              <div>
-                <div className="text-xs uppercase tracking-wide text-slate-500">Text preview</div>
-                <div className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap rounded-lg bg-surface px-3 py-2 text-sm leading-relaxed text-slate-300">
-                  {row.text_content
-                    ? row.text_content.length > 1200
-                      ? `${row.text_content.slice(0, 1200)}…`
-                      : row.text_content
-                    : "—"}
-                </div>
-              </div>
-              <p className="text-xs text-slate-500">
-                Links: {Array.isArray(row.payload?.links) ? row.payload.links.length : 0}
-              </p>
-            </div>
-          ))}
+          <h2 className="text-sm font-semibold text-slate-200">
+            Primary pages ({internalGrouped.length})
+          </h2>
+          <p className="mt-1 text-xs text-slate-500">
+            Same-domain and seed URLs. Full text, headings, and link lists; asset URLs are references only.
+          </p>
+          <ul className="mt-4 space-y-2">
+            {internalGrouped.map(([pageUrl, rows]) => {
+              const open = openPages[`i:${pageUrl}`] ?? false;
+              const row = rows[0];
+              const fullText = row.full_text ?? row.text_content ?? "—";
+              const expanded = textExpanded[`i:${pageUrl}`] ?? false;
+              const longBody = fullText.length > 1400;
+              const headings =
+                row.headings ??
+                (Array.isArray(payloadMeta(row).headings) ? (payloadMeta(row).headings as ExtractedData["headings"]) : []);
+              const q =
+                row.content_quality_score ??
+                (typeof payloadMeta(row).content_quality_score === "number"
+                  ? (payloadMeta(row).content_quality_score as number)
+                  : null);
+              return (
+                <li key={`i:${pageUrl}`} className="rounded-lg border border-border-subtle bg-surface/60">
+                  <button
+                    type="button"
+                    onClick={() => togglePage(`i:${pageUrl}`)}
+                    className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm text-slate-200 hover:bg-surface-overlay/40"
+                  >
+                    <span className="break-all font-mono text-xs text-accent">{pageUrl}</span>
+                    <span className="shrink-0 text-xs text-slate-500">{open ? "▼" : "▶"}</span>
+                  </button>
+                  {open ? (
+                    <div className="space-y-3 border-t border-border-subtle px-3 py-3 text-sm">
+                      <div>
+                        <div className="text-xs uppercase text-slate-500">Title</div>
+                        <div className="text-slate-100">{row.title ?? "—"}</div>
+                      </div>
+                      {q != null ? (
+                        <div className="text-xs text-slate-500">Content quality: {q.toFixed(3)}</div>
+                      ) : null}
+                      {headings && headings.length > 0 ? (
+                        <div>
+                          <div className="text-xs uppercase text-slate-500">Headings</div>
+                          <ul className="mt-1 max-h-40 overflow-auto text-xs text-slate-300">
+                            {headings.map((h, i) => (
+                              <li key={i}>
+                                H{h.level ?? "?"}: {h.text ?? ""}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      ) : null}
+                      <div>
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="text-xs uppercase text-slate-500">Full text</div>
+                          {longBody ? (
+                            <button
+                              type="button"
+                              onClick={() => toggleTextExpand(`i:${pageUrl}`)}
+                              className="text-xs text-accent hover:underline"
+                            >
+                              {expanded ? "Show less" : "Show more"}
+                            </button>
+                          ) : null}
+                        </div>
+                        <div
+                          className={`overflow-auto whitespace-pre-wrap rounded bg-surface px-2 py-2 text-slate-300 ${
+                            expanded || !longBody ? "max-h-[min(70vh,2400px)]" : "max-h-48"
+                          }`}
+                        >
+                          {fullText}
+                        </div>
+                      </div>
+                      <div className="text-xs text-slate-500">
+                        Links: {Array.isArray(row.payload?.links) ? row.payload.links.length : 0} · Internal:{" "}
+                        {row.internal_links?.length ??
+                          (Array.isArray(payloadMeta(row).internal_links)
+                            ? (payloadMeta(row).internal_links as unknown[]).length
+                            : 0)}{" "}
+                        · External:{" "}
+                        {row.external_links?.length ??
+                          (Array.isArray(payloadMeta(row).external_links)
+                            ? (payloadMeta(row).external_links as unknown[]).length
+                            : 0)}{" "}
+                        · Images: {row.images?.length ?? row.payload?.images?.length ?? 0} · Files:{" "}
+                        {row.files?.length ?? row.payload?.files?.length ?? 0}
+                      </div>
+                      {(row.images?.length ?? 0) > 0 ? (
+                        <div>
+                          <div className="text-xs uppercase text-slate-500">Image URLs</div>
+                          <ul className="mt-1 max-h-32 overflow-auto font-mono text-[11px] text-slate-400">
+                            {(row.images ?? (row.payload?.images as ExtractedData["images"]) ?? []).map((im, i) => (
+                              <li key={i} className="break-all">
+                                {(im as { file_url?: string }).file_url ?? JSON.stringify(im)}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      ) : null}
+                      {(row.files?.length ?? 0) > 0 ? (
+                        <div>
+                          <div className="text-xs uppercase text-slate-500">File links</div>
+                          <ul className="mt-1 max-h-32 overflow-auto font-mono text-[11px] text-slate-400">
+                            {(row.files ?? (row.payload?.files as ExtractedData["files"]) ?? []).map((f, i) => (
+                              <li key={i} className="break-all">
+                                {(f as { file_url?: string; file_type?: string }).file_url ?? JSON.stringify(f)}
+                                {(f as { file_type?: string }).file_type
+                                  ? ` (${(f as { file_type?: string }).file_type})`
+                                  : ""}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      ) : null}
+
+      {externalGrouped.length > 0 ? (
+        <section className="rounded-xl border border-amber-900/30 bg-amber-950/10 p-5 shadow-glow">
+          <h2 className="text-sm font-semibold text-amber-200/90">
+            External pages ({externalGrouped.length})
+          </h2>
+          <p className="mt-1 text-xs text-amber-200/60">Off-domain URLs scraped when external crawling was enabled.</p>
+          <ul className="mt-4 space-y-2">
+            {externalGrouped.map(([pageUrl, rows]) => {
+              const open = openPages[`e:${pageUrl}`] ?? false;
+              const row = rows[0];
+              const fullText = row.full_text ?? row.text_content ?? "—";
+              const expanded = textExpanded[`e:${pageUrl}`] ?? false;
+              const longBody = fullText.length > 1400;
+              return (
+                <li key={`e:${pageUrl}`} className="rounded-lg border border-border-subtle bg-surface/60">
+                  <button
+                    type="button"
+                    onClick={() => togglePage(`e:${pageUrl}`)}
+                    className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm text-slate-200 hover:bg-surface-overlay/40"
+                  >
+                    <span className="break-all font-mono text-xs text-amber-300/90">{pageUrl}</span>
+                    <span className="shrink-0 text-xs text-slate-500">{open ? "▼" : "▶"}</span>
+                  </button>
+                  {open ? (
+                    <div className="space-y-3 border-t border-border-subtle px-3 py-3 text-sm">
+                      <div>
+                        <div className="text-xs uppercase text-slate-500">Title</div>
+                        <div className="text-slate-100">{row.title ?? "—"}</div>
+                      </div>
+                      <div>
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="text-xs uppercase text-slate-500">Full text</div>
+                          {longBody ? (
+                            <button
+                              type="button"
+                              onClick={() => toggleTextExpand(`e:${pageUrl}`)}
+                              className="text-xs text-accent hover:underline"
+                            >
+                              {expanded ? "Show less" : "Show more"}
+                            </button>
+                          ) : null}
+                        </div>
+                        <div
+                          className={`overflow-auto whitespace-pre-wrap rounded bg-surface px-2 py-2 text-slate-300 ${
+                            expanded || !longBody ? "max-h-[min(70vh,2400px)]" : "max-h-48"
+                          }`}
+                        >
+                          {fullText}
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
+                </li>
+              );
+            })}
+          </ul>
         </section>
       ) : null}
 
@@ -196,9 +468,7 @@ export function JobDetailPanel({ jobId }: Props) {
                 key={row.id}
                 className="border-b border-border-subtle/60 pb-2 last:border-0 last:pb-0"
               >
-                <span className="text-slate-600">
-                  {new Date(row.created_at).toISOString()}
-                </span>{" "}
+                <span className="text-slate-600">{new Date(row.created_at).toISOString()}</span>{" "}
                 <span className="text-indigo-300">[{row.source}]</span>{" "}
                 <span className="text-slate-300">{row.step}</span>{" "}
                 <span
@@ -212,13 +482,9 @@ export function JobDetailPanel({ jobId }: Props) {
                 >
                   {row.outcome}
                 </span>
-                {row.http_status != null ? (
-                  <span className="text-slate-500"> http={row.http_status}</span>
-                ) : null}
+                {row.http_status != null ? <span className="text-slate-500"> http={row.http_status}</span> : null}
                 <div className="mt-0.5 text-slate-500">{row.url}</div>
-                {row.error_message ? (
-                  <div className="mt-1 text-red-300/90">{row.error_message}</div>
-                ) : null}
+                {row.error_message ? <div className="mt-1 text-red-300/90">{row.error_message}</div> : null}
               </li>
             ))}
           </ul>

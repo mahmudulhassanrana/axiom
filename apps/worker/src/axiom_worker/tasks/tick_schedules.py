@@ -135,12 +135,25 @@ def _dispatch_one(conn: psycopg.Connection, row: dict[str, Any]) -> None:
     job_id = uuid.uuid4()
     run_id = uuid.uuid4()
 
+    crawl_type = str(payload.get("crawl_type") or "single_page")
+    sitemap_url = payload.get("sitemap_url")
+    sitemap_str = str(sitemap_url).strip() if sitemap_url else None
+
     job_payload = {
         "url": url_str,
         "engine": engine,
         "include_html": include_html,
         "source_id": source_id,
         "schedule_id": str(schedule_id),
+        "crawl_type": crawl_type,
+        "sitemap_url": sitemap_str,
+        "crawl_max_pages": int(payload.get("crawl_max_pages") or 1),
+        "crawl_delay_seconds": float(payload.get("crawl_delay_seconds") or 1.5),
+        "crawl_jitter_seconds": float(payload.get("crawl_jitter_seconds") or 0.5),
+        "crawl_allow_external": bool(payload.get("crawl_allow_external", False)),
+        "crawl_max_external_pages": int(payload.get("crawl_max_external_pages") or 25),
+        "crawl_max_external_per_host": int(payload.get("crawl_max_external_per_host") or 5),
+        "pre_fetch_jitter_max_seconds": float(payload.get("pre_fetch_jitter_max_seconds") or 0.0),
     }
 
     with conn.cursor() as cur:
@@ -183,6 +196,15 @@ def _dispatch_one(conn: psycopg.Connection, row: dict[str, Any]) -> None:
             "run_id": str(run_id),
             "schedule_id": str(schedule_id),
             "max_retries_override": max_retries,
+            "crawl_max_pages": job_payload["crawl_max_pages"],
+            "crawl_delay_seconds": job_payload["crawl_delay_seconds"],
+            "crawl_jitter_seconds": job_payload["crawl_jitter_seconds"],
+            "crawl_allow_external": job_payload["crawl_allow_external"],
+            "crawl_max_external_pages": job_payload["crawl_max_external_pages"],
+            "crawl_max_external_per_host": job_payload["crawl_max_external_per_host"],
+            "pre_fetch_jitter_max_seconds": job_payload["pre_fetch_jitter_max_seconds"],
+            "crawl_type": crawl_type,
+            "sitemap_url": sitemap_str,
         },
         queue=str(celery_app.conf.task_default_queue),
     )

@@ -33,10 +33,22 @@ export type ExtractedData = {
     links?: { href: string; text?: string | null }[];
     metadata?: Record<string, unknown>;
     language?: string | null;
+    images?: unknown[];
+    files?: unknown[];
+    page_url?: string;
   };
   extractor_kind: string;
   http_status: number | null;
   created_at: string;
+  page_url?: string | null;
+  images?: { file_url: string; file_type: string; source_url: string }[];
+  files?: { file_url: string; file_type: string; source_url: string }[];
+  full_text?: string | null;
+  headings?: { level?: number; text?: string }[];
+  internal_links?: { href: string; text?: string | null }[];
+  external_links?: { href: string; text?: string | null }[];
+  crawl_source?: string | null;
+  content_quality_score?: number | null;
 };
 
 export type RunDetail = Run & {

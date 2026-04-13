@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from axiom_api.db.models.api_key import ApiKey
     from axiom_api.db.models.job_schedule import JobSchedule
     from axiom_api.db.models.organization import Organization
+    from axiom_api.db.models.source import Source
 
 
 class User(Base, TimestampMixin):
@@ -42,3 +43,4 @@ class User(Base, TimestampMixin):
         cascade="all, delete-orphan",
     )
     job_schedules_created: Mapped[list["JobSchedule"]] = relationship(back_populates="created_by")
+    sources_created: Mapped[list["Source"]] = relationship(back_populates="created_by")

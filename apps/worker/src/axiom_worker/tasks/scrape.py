@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import random
+import time
 import uuid
 from typing import Any
 from uuid import UUID
@@ -14,11 +16,15 @@ from axiom_compliance import (
 from axiom_compliance.exceptions import ComplianceError
 from axiom_compliance.lists import hostname_for_url
 from axiom_extractors import HtmlExtractor, PlaywrightExtractor
+from axiom_extractors.assets import enrich_payload_with_assets
 from celery import Task
 from playwright.sync_api import Error as PlaywrightError
 
 from axiom_worker.celery_app import app
+from axiom_worker.crawl_runner import run_multi_page_scrape
+from axiom_worker.sitemap_urls import default_sitemap_url_for_base, resolve_sitemap_seed_urls
 from axiom_worker.extracted_persistence import insert_extracted_data
+from axiom_worker.job_events import publish_job_event
 from axiom_worker.job_status import (
     claim_run_for_scrape,
     load_completed_scrape_document,
@@ -28,6 +34,13 @@ from axiom_worker.job_status import (
 from axiom_worker.scrape_audit import record_scrape_audit_event_sync
 
 logger = logging.getLogger(__name__)
+
+
+def _pre_fetch_jitter(max_sec: float | None) -> None:
+    if max_sec is None or max_sec <= 0:
+        return
+    time.sleep(random.uniform(0.0, min(2.0, float(max_sec))))
+
 
 _html_extractor = HtmlExtractor()
 _playwright_extractor = PlaywrightExtractor()
@@ -112,12 +125,31 @@ def scrape_task(
     run_id: str | None = None,
     schedule_id: str | None = None,
     max_retries_override: int | None = None,
+    crawl_max_pages: int | None = None,
+    crawl_delay_seconds: float | None = None,
+    crawl_jitter_seconds: float | None = None,
+    crawl_allow_external: bool | None = None,
+    crawl_max_external_pages: int | None = None,
+    crawl_max_external_per_host: int | None = None,
+    pre_fetch_jitter_max_seconds: float | None = None,
+    **forward_kw: Any,
 ) -> dict[str, Any]:
     """
     Fetch ``url`` and return a normalized extraction payload (JSON-serializable dict).
 
     Retries with exponential backoff + jitter for transient HTTP, network, and browser errors.
+
+    ``**forward_kw`` absorbs ``crawl_type``, ``sitemap_url``, and future API fields so Celery
+    never raises "unexpected keyword argument" after API/worker version skew.
     """
+    crawl_type = forward_kw.pop("crawl_type", None)
+    sitemap_url = forward_kw.pop("sitemap_url", None)
+    if forward_kw:
+        logger.warning(
+            "scrape_task.unused_forward_kwargs",
+            extra={"keys": list(forward_kw), "celery_task_id": self.request.id},
+        )
+
     task_id = self.request.id
     retries = self.request.retries
     settings = ComplianceSettings.from_env()
@@ -240,7 +272,95 @@ def scrape_task(
 
     html_ex, pw_ex = _select_extractors(settings)
 
+    crawl_n = int(crawl_max_pages if crawl_max_pages is not None else 1)
+    crawl_n = max(1, min(50, crawl_n))
+    c_delay = float(crawl_delay_seconds if crawl_delay_seconds is not None else 1.5)
+    c_jitter = float(crawl_jitter_seconds if crawl_jitter_seconds is not None else 0.5)
+    allow_ext = bool(crawl_allow_external) if crawl_allow_external is not None else False
+    ext_total = int(crawl_max_external_pages if crawl_max_external_pages is not None else 25)
+    ext_total = max(0, min(50, ext_total))
+    ext_per_host = int(crawl_max_external_per_host if crawl_max_external_per_host is not None else 5)
+    ext_per_host = max(1, min(20, ext_per_host))
+    pre_jitter = float(pre_fetch_jitter_max_seconds if pre_fetch_jitter_max_seconds is not None else 0.0)
+
+    ct = str(crawl_type or "single_page").strip().lower()
+    use_sitemap_mode = ct == "sitemap"
+    use_multi = (job_uuid is not None and run_uuid is not None) and (crawl_n > 1 or use_sitemap_mode)
+
+    if use_multi:
+        seed_urls: list[str] | None = None
+        expand_links = True
+        if use_sitemap_mode:
+            expand_links = False
+            sm = (str(sitemap_url).strip() if sitemap_url else "") or default_sitemap_url_for_base(url)
+            try:
+                seed_urls = resolve_sitemap_seed_urls(sm, crawl_n)
+            except Exception as exc:
+                if job_uuid is not None and run_uuid is not None:
+                    mark_failed(run_uuid, job_uuid, f"Sitemap resolution failed: {exc}")
+                raise
+            if not seed_urls:
+                msg = "Sitemap produced no URLs"
+                mark_failed(run_uuid, job_uuid, msg)
+                return {}
+        try:
+            out = run_multi_page_scrape(
+                seed_url=url,
+                max_pages=crawl_n,
+                delay_seconds=c_delay,
+                jitter_seconds=c_jitter,
+                engine=engine,
+                html_ex=html_ex,
+                pw_ex=pw_ex,
+                settings=settings,
+                user_id=user_id,
+                organization_id=organization_id,
+                audit_correlation_id=audit_correlation_id,
+                celery_task_id=task_id,
+                job_id=job_uuid,
+                run_id=run_uuid,
+                compliance_preverified=compliance_preverified,
+                allow_external=allow_ext,
+                max_external_total=ext_total,
+                max_external_per_host=ext_per_host,
+                pre_fetch_jitter_max_seconds=pre_jitter,
+                seed_urls=seed_urls,
+                expand_links=expand_links,
+            )
+        except Exception as exc:
+            mark_failed(run_uuid, job_uuid, str(exc))
+            raise
+        if out["pages_done"] == 0:
+            msg = "Crawl produced no extractable pages"
+            mark_failed(run_uuid, job_uuid, msg)
+            return {}
+        mark_succeeded(
+            run_uuid,
+            job_uuid,
+            {
+                "http_status": None,
+                "extractor_kind": engine,
+                "celery_task_id": task_id,
+                "pages_scraped": out["pages_done"],
+                "crawl_max_pages": crawl_n,
+            },
+        )
+        return out.get("last_payload") or {}
+
+    if job_uuid is not None and run_uuid is not None:
+        publish_job_event(
+            job_uuid,
+            {
+                "type": "job_started",
+                "job_id": str(job_uuid),
+                "run_id": str(run_uuid),
+                "max_pages": 1,
+                "seed_url": url,
+            },
+        )
+
     logger.info("Scraping started url=%s engine=%s", url, engine)
+    _pre_fetch_jitter(pre_jitter)
     try:
         if engine == "html_requests":
             doc = html_ex.extract(url, include_html=include_html)
@@ -379,8 +499,31 @@ def scrape_task(
         len((doc.text or "").strip()),
     )
 
+    links_dump = [link.model_dump(mode="json") for link in doc.links]
+    imgs, files = enrich_payload_with_assets(
+        page_url=url,
+        html=doc.html,
+        links=links_dump,
+    )
     payload = doc.to_json_dict()
+    plm = payload.setdefault("metadata", {})
+    if isinstance(plm, dict):
+        plm.setdefault("crawl_source", "internal")
+        plm.setdefault("crawl_seed_url", url)
+    payload["page_url"] = url
+    payload["images"] = imgs
+    payload["files"] = files
     if job_uuid is not None and run_uuid is not None:
+        publish_job_event(
+            job_uuid,
+            {
+                "type": "page_scraped",
+                "url": url,
+                "pages_done": 1,
+                "max_pages": 1,
+                "title": doc.title,
+            },
+        )
         logger.info(
             "scrape_task.persist_start",
             extra={"axiom_url": url, "run_id": str(run_uuid), "celery_task_id": task_id},
@@ -401,6 +544,17 @@ def scrape_task(
                 "http_status": doc.http_status,
                 "extractor_kind": doc.extractor_kind,
                 "celery_task_id": task_id,
+                "pages_scraped": 1,
+            },
+        )
+        publish_job_event(
+            job_uuid,
+            {
+                "type": "job_completed",
+                "job_id": str(job_uuid),
+                "run_id": str(run_uuid),
+                "pages_done": 1,
+                "status": "completed",
             },
         )
         logger.info(

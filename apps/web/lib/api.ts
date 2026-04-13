@@ -107,3 +107,28 @@ export async function apiFetch<T>(path: string, init: RequestInit = {}): Promise
   }
   return data as T;
 }
+
+/** Browser download with Bearer token (e.g. job export files). */
+export async function apiDownloadBlob(path: string, filename: string): Promise<void> {
+  const headers = new Headers();
+  const token = getApiToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  const url = resolveApiUrl(path);
+  const res = await fetch(url, { headers });
+  if (!res.ok) {
+    const text = await res.text();
+    let data: unknown = text;
+    try {
+      data = JSON.parse(text) as unknown;
+    } catch {
+      /* keep text */
+    }
+    throw new ApiError(res.statusText || "Download failed", res.status, data);
+  }
+  const blob = await res.blob();
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
