@@ -401,6 +401,23 @@ def extract_links_from_soup(soup: BeautifulSoup, base_url: str) -> list[Extracte
             continue
         seen.add(key)
         out.append(ExtractedLink(href=canonical, text=text))
+    for tag in soup.find_all("link", href=True):
+        rel = tag.get("rel") or []
+        if isinstance(rel, str):
+            rel = [rel]
+        if "next" not in {str(x).lower() for x in rel}:
+            continue
+        href = str(tag.get("href", "")).strip()
+        if not href or href.startswith(("#", "javascript:", "mailto:", "tel:")):
+            continue
+        absolute = urljoin(base_url, href)
+        canonical, _frag = urldefrag(absolute)
+        text = "next"
+        key = (canonical, text)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(ExtractedLink(href=canonical, text=text))
     return out
 
 

@@ -16,6 +16,19 @@ _DOC_EXT = {
     ".json": "json",
     ".xml": "xml",
     ".txt": "text",
+    ".xls": "xls",
+    ".xlsx": "xlsx",
+    ".doc": "doc",
+    ".docx": "docx",
+    ".ppt": "ppt",
+    ".pptx": "pptx",
+    ".rtf": "rtf",
+    ".odt": "odt",
+    ".ods": "ods",
+    ".rar": "rar",
+    ".7z": "7z",
+    ".gz": "gz",
+    ".tar": "tar",
 }
 
 
@@ -166,6 +179,29 @@ def extract_image_urls_from_html(html: str, base_url: str) -> list[dict[str, Any
     return out
 
 
+def file_links_from_html(html: str, page_url: str) -> list[dict[str, Any]]:
+    """Collect ``<a href>`` pointing at document-like paths (no download)."""
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    soup = BeautifulSoup(html, "html.parser")
+    for a in soup.find_all("a", href=True):
+        raw = str(a.get("href") or "").strip()
+        if not raw or raw.startswith(("#", "javascript:", "mailto:", "tel:")):
+            continue
+        abs_u = urljoin(page_url, raw)
+        canonical, _ = urldefrag(abs_u)
+        if not canonical.startswith(("http://", "https://")):
+            continue
+        ft, cat = classify_asset_url(canonical)
+        if cat != "file" or not ft:
+            continue
+        if canonical in seen:
+            continue
+        seen.add(canonical)
+        out.append({"file_url": canonical, "file_type": ft, "source_url": page_url})
+    return out
+
+
 def file_links_from_page_links(
     links: list[dict[str, Any]],
     page_url: str,
@@ -177,14 +213,29 @@ def file_links_from_page_links(
         href = str((item or {}).get("href") or "").strip()
         if not href:
             continue
-        ft, cat = classify_asset_url(href)
+        abs_h = urljoin(page_url, href) if not href.startswith(("http://", "https://")) else href
+        canonical, _ = urldefrag(abs_h)
+        ft, cat = classify_asset_url(canonical)
         if cat != "file" or not ft:
             continue
-        if href in seen:
+        if canonical in seen:
             continue
-        seen.add(href)
-        out.append({"file_url": href, "file_type": ft, "source_url": page_url})
+        seen.add(canonical)
+        out.append({"file_url": canonical, "file_type": ft, "source_url": page_url})
     return out
+
+
+def _merge_file_link_rows(*parts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    merged: list[dict[str, Any]] = []
+    for lst in parts:
+        for it in lst:
+            u = str((it or {}).get("file_url") or "").strip()
+            if not u or u in seen:
+                continue
+            seen.add(u)
+            merged.append(it)
+    return merged
 
 
 def enrich_payload_with_assets(
@@ -193,7 +244,9 @@ def enrich_payload_with_assets(
     html: str | None,
     links: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Return ``(images, files)`` reference lists for persistence."""
+    """Return ``(images, file_links)`` reference lists for persistence (links only, no downloads)."""
     images = extract_image_urls_from_html(html, page_url) if html else []
-    files = file_links_from_page_links(links, page_url)
-    return images, files
+    from_anchors = file_links_from_page_links(links, page_url)
+    from_dom = file_links_from_html(html, page_url) if html else []
+    file_links = _merge_file_link_rows(from_anchors, from_dom)
+    return images, file_links

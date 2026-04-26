@@ -8,30 +8,29 @@ from typing import Any
 from uuid import UUID
 
 import requests
-from axiom_compliance import (
-    ComplianceSettings,
-    ScrapeComplianceContext,
-    run_compliance_before_fetch,
-)
-from axiom_compliance.exceptions import ComplianceError
+from axiom_compliance import ComplianceSettings, ScrapeComplianceContext
+from axiom_compliance.exceptions import ComplianceError, RobotsTxtDisallowedError
 from axiom_compliance.lists import hostname_for_url
-from axiom_extractors import HtmlExtractor, PlaywrightExtractor
+from axiom_extractors import HtmlExtractor, PlaywrightExtractor, extract_for_crawl_engine
 from axiom_extractors.assets import enrich_payload_with_assets
+from axiom_extractors.entities import extract_structured_entities
 from celery import Task
 from playwright.sync_api import Error as PlaywrightError
 
 from axiom_worker.celery_app import app
+from axiom_worker.compliance_fetch import run_compliance_before_fetch
 from axiom_worker.crawl_runner import run_multi_page_scrape
-from axiom_worker.sitemap_urls import default_sitemap_url_for_base, resolve_sitemap_seed_urls
 from axiom_worker.extracted_persistence import insert_extracted_data
 from axiom_worker.job_events import publish_job_event
 from axiom_worker.job_status import (
     claim_run_for_scrape,
     load_completed_scrape_document,
     mark_failed,
+    mark_restricted,
     mark_succeeded,
 )
 from axiom_worker.scrape_audit import record_scrape_audit_event_sync
+from axiom_worker.sitemap_urls import default_sitemap_url_for_base, resolve_sitemap_seed_urls
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +131,7 @@ def scrape_task(
     crawl_max_external_pages: int | None = None,
     crawl_max_external_per_host: int | None = None,
     pre_fetch_jitter_max_seconds: float | None = None,
+    robots_override: bool = False,
     **forward_kw: Any,
 ) -> dict[str, Any]:
     """
@@ -223,6 +223,7 @@ def scrape_task(
             ctx=ctx,
             settings=settings,
             preverified=compliance_preverified,
+            skip_robots_check=robots_override,
         )
     except ComplianceError as exc:
         record_scrape_audit_event_sync(
@@ -240,6 +241,23 @@ def scrape_task(
             extra=j_extra,
         )
         if job_uuid is not None and run_uuid is not None:
+            if isinstance(exc, RobotsTxtDisallowedError):
+                mark_restricted(run_uuid, job_uuid, str(exc))
+                publish_job_event(
+                    job_uuid,
+                    {
+                        "type": "job_restricted",
+                        "job_id": str(job_uuid),
+                        "run_id": str(run_uuid),
+                        "reason": "robots_txt",
+                        "detail": str(exc),
+                    },
+                )
+                logger.warning(
+                    "scrape_task.robots_restricted",
+                    extra={"axiom_url": url, "celery_task_id": task_id},
+                )
+                return {}
             mark_failed(run_uuid, job_uuid, str(exc))
         logger.warning(
             "scrape_task.compliance_denied",
@@ -269,6 +287,12 @@ def scrape_task(
                 extra={"run_id": str(run_uuid), "celery_task_id": task_id},
             )
             return {}
+        elif claim == "restricted":
+            logger.info(
+                "scrape_task.skip_restricted",
+                extra={"run_id": str(run_uuid), "celery_task_id": task_id},
+            )
+            return {}
 
     html_ex, pw_ex = _select_extractors(settings)
 
@@ -284,8 +308,12 @@ def scrape_task(
     pre_jitter = float(pre_fetch_jitter_max_seconds if pre_fetch_jitter_max_seconds is not None else 0.0)
 
     ct = str(crawl_type or "single_page").strip().lower()
+    if ct == "multi_page":
+        crawl_n = max(2, crawl_n)
     use_sitemap_mode = ct == "sitemap"
-    use_multi = (job_uuid is not None and run_uuid is not None) and (crawl_n > 1 or use_sitemap_mode)
+    use_multi = (job_uuid is not None and run_uuid is not None) and (
+        crawl_n > 1 or use_sitemap_mode or ct == "multi_page"
+    )
 
     if use_multi:
         seed_urls: list[str] | None = None
@@ -326,7 +354,24 @@ def scrape_task(
                 pre_fetch_jitter_max_seconds=pre_jitter,
                 seed_urls=seed_urls,
                 expand_links=expand_links,
+                robots_override=robots_override,
             )
+        except ComplianceError as exc:
+            if isinstance(exc, RobotsTxtDisallowedError):
+                mark_restricted(run_uuid, job_uuid, str(exc))
+                publish_job_event(
+                    job_uuid,
+                    {
+                        "type": "job_restricted",
+                        "job_id": str(job_uuid),
+                        "run_id": str(run_uuid),
+                        "reason": "robots_txt",
+                        "detail": str(exc),
+                    },
+                )
+                return {}
+            mark_failed(run_uuid, job_uuid, str(exc))
+            raise
         except Exception as exc:
             mark_failed(run_uuid, job_uuid, str(exc))
             raise
@@ -362,12 +407,15 @@ def scrape_task(
     logger.info("Scraping started url=%s engine=%s", url, engine)
     _pre_fetch_jitter(pre_jitter)
     try:
-        if engine == "html_requests":
-            doc = html_ex.extract(url, include_html=include_html)
-        elif engine == "playwright":
-            doc = pw_ex.extract(url, include_html=include_html)
-        else:
+        if engine not in ("html_requests", "playwright"):
             raise ValueError(f"Unsupported engine: {engine!r}")
+        doc, extraction_type = extract_for_crawl_engine(
+            url=url,
+            include_html=include_html,
+            engine=engine,  # type: ignore[arg-type]
+            html_ex=html_ex,
+            pw_ex=pw_ex,
+        )
     except ValueError as exc:
         logger.exception(
             "scrape_task.failed_no_retry",
@@ -500,11 +548,12 @@ def scrape_task(
     )
 
     links_dump = [link.model_dump(mode="json") for link in doc.links]
-    imgs, files = enrich_payload_with_assets(
+    imgs, file_links = enrich_payload_with_assets(
         page_url=url,
         html=doc.html,
         links=links_dump,
     )
+    structured = extract_structured_entities(html=doc.html, text=doc.text)
     payload = doc.to_json_dict()
     plm = payload.setdefault("metadata", {})
     if isinstance(plm, dict):
@@ -512,7 +561,10 @@ def scrape_task(
         plm.setdefault("crawl_seed_url", url)
     payload["page_url"] = url
     payload["images"] = imgs
-    payload["files"] = files
+    payload["files"] = file_links
+    payload["file_links"] = file_links
+    payload["structured_entities"] = structured
+    payload["extraction_type"] = extraction_type
     if job_uuid is not None and run_uuid is not None:
         publish_job_event(
             job_uuid,

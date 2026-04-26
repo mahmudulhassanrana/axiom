@@ -52,6 +52,7 @@ def _celery_kwargs_from_payload(
         "pre_fetch_jitter_max_seconds": float(payload["pre_fetch_jitter_max_seconds"]),
         "crawl_type": str(payload.get("crawl_type") or "single_page"),
         "sitemap_url": payload.get("sitemap_url"),
+        "robots_override": bool(payload.get("robots_override")),
         **({"schedule_id": str(schedule_id)} if schedule_id else {}),
     }
 

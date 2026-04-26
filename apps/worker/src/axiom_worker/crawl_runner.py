@@ -2,22 +2,29 @@
 
 from __future__ import annotations
 
+import logging
 import random
 import time
 from collections import deque
 from typing import Any
-from urllib.parse import urldefrag, urlparse, urljoin
+from urllib.parse import urldefrag, urljoin, urlparse
 from uuid import UUID
 
-from axiom_compliance import ComplianceSettings, ScrapeComplianceContext, run_compliance_before_fetch
+from axiom_compliance import ComplianceSettings, ScrapeComplianceContext
 from axiom_compliance.exceptions import ComplianceError
 from axiom_extractors import HtmlExtractor, PlaywrightExtractor
 from axiom_extractors.assets import enrich_payload_with_assets
+from axiom_extractors.crawl_constants import MIN_CRAWL_CHARS, MIN_CRAWL_QUALITY
+from axiom_extractors.entities import extract_structured_entities
+from axiom_extractors.hybrid import extract_for_crawl_engine
+from axiom_extractors.pagination_hints import sort_links_for_crawl
+from axiom_extractors.pagination_nav import crawl_visit_key, extra_pagination_targets
+
+from axiom_worker.compliance_fetch import run_compliance_before_fetch
 from axiom_worker.extracted_persistence import insert_extracted_data
 from axiom_worker.job_events import publish_job_event
 
-MIN_CRAWL_QUALITY = 0.07
-MIN_CRAWL_CHARS = 32
+logger = logging.getLogger(__name__)
 
 
 def _same_site(a: str, b: str) -> bool:
@@ -78,9 +85,10 @@ def run_multi_page_scrape(
     pre_fetch_jitter_max_seconds: float = 0.0,
     seed_urls: list[str] | None = None,
     expand_links: bool = True,
+    robots_override: bool = False,
 ) -> dict[str, Any]:
     """Scrape up to ``max_pages`` pages; persist one ``extracted_data`` row per page."""
-    visited: set[str] = set()
+    visited_norm: set[str] = set()
     if seed_urls:
         queue: deque[str] = deque([u for u in seed_urls if u][: max_pages * 3])
     else:
@@ -109,9 +117,14 @@ def run_multi_page_scrape(
 
     while queue and pages_done < max_pages:
         url = queue.popleft()
-        if url in visited:
+        vkey = crawl_visit_key(url)
+        if not vkey or vkey in visited_norm:
             continue
-        visited.add(url)
+        visited_norm.add(vkey)
+        logger.info(
+            "crawl.pagination_page_start",
+            extra={"page_index": pages_done + 1, "max_pages": max_pages, "url": url},
+        )
 
         ctx = ScrapeComplianceContext(
             user_id=user_id,
@@ -127,6 +140,7 @@ def run_multi_page_scrape(
                 ctx=ctx,
                 settings=settings,
                 preverified=compliance_preverified and url == seed_url,
+                skip_robots_check=robots_override,
             )
         except ComplianceError as exc:
             publish_job_event(
@@ -141,14 +155,14 @@ def run_multi_page_scrape(
             time.sleep(random.uniform(0.0, min(2.0, float(pre_fetch_jitter_max_seconds))))
 
         try:
-            if engine == "html_requests":
-                doc = html_ex.extract(url, include_html=True)
-                html = doc.html or ""
-            elif engine == "playwright":
-                doc = pw_ex.extract(url, include_html=True)
-                html = doc.html or ""
-            else:
-                raise ValueError(f"Unsupported engine: {engine!r}")
+            doc, ext_type = extract_for_crawl_engine(
+                url=url,
+                include_html=True,
+                engine=engine,  # type: ignore[arg-type]
+                html_ex=html_ex,
+                pw_ex=pw_ex,
+            )
+            html = doc.html or ""
         except Exception as exc:
             publish_job_event(
                 job_id,
@@ -159,11 +173,12 @@ def run_multi_page_scrape(
             continue
 
         links_dump = [link.model_dump(mode="json") for link in doc.links]
-        imgs, files = enrich_payload_with_assets(
+        imgs, file_links = enrich_payload_with_assets(
             page_url=url,
             html=html if html else None,
             links=links_dump,
         )
+        ents = extract_structured_entities(html=doc.html, text=doc.text)
         payload = doc.to_json_dict()
         pl_meta = payload.setdefault("metadata", {})
         if isinstance(pl_meta, dict):
@@ -173,7 +188,11 @@ def run_multi_page_scrape(
             pl_meta.setdefault("crawl_seed_url", seed_url)
         payload["page_url"] = url
         payload["images"] = imgs
-        payload["files"] = files
+        payload["files"] = file_links
+        payload["file_links"] = file_links
+        payload["structured_entities"] = ents
+        payload["extraction_type"] = ext_type
+        payload["crawl_depth"] = pages_done + 1
 
         text_body = (doc.text or "").strip()
         meta = pl_meta if isinstance(pl_meta, dict) else {}
@@ -181,7 +200,12 @@ def run_multi_page_scrape(
         if not text_body:
             publish_job_event(
                 job_id,
-                {"type": "page_skipped", "url": url, "reason": "empty_text", "pages_done": pages_done},
+                {
+                    "type": "page_skipped",
+                    "url": url,
+                    "reason": "empty_text",
+                    "pages_done": pages_done,
+                },
             )
             continue
         if qscore < MIN_CRAWL_QUALITY and len(text_body) < MIN_CRAWL_CHARS:
@@ -214,14 +238,21 @@ def run_multi_page_scrape(
                 "crawl_source": meta.get("crawl_source"),
             },
         )
+        logger.info(
+            "crawl.pagination_page_saved",
+            extra={"pages_done": pages_done, "max_pages": max_pages, "url": url},
+        )
 
         if pages_done >= max_pages:
             break
 
         if expand_links:
-            for link in doc.links:
+            for link in sort_links_for_crawl(doc.links):
                 nxt = _normalize_queue_url(link.href, seed_url, allow_external=allow_external)
-                if not nxt or nxt in visited:
+                if not nxt:
+                    continue
+                nk = crawl_visit_key(nxt)
+                if not nk or nk == crawl_visit_key(url) or nk in visited_norm:
                     continue
                 if _is_external_page(nxt):
                     if not allow_external or max_external_total <= 0:
@@ -233,6 +264,33 @@ def run_multi_page_scrape(
                         continue
                     ext_enq_by_host[oh] = ext_enq_by_host.get(oh, 0) + 1
                     ext_enqueued_total += 1
+                logger.info(
+                    "crawl.pagination_next_enqueued",
+                    extra={"from_url": url, "next_url": nxt},
+                )
+                queue.append(nxt)
+
+            for raw_next in extra_pagination_targets(html=html, page_url=url, seed_url=seed_url):
+                nxt = _normalize_queue_url(raw_next, seed_url, allow_external=allow_external)
+                if not nxt:
+                    continue
+                nk = crawl_visit_key(nxt)
+                if not nk or nk == crawl_visit_key(url) or nk in visited_norm:
+                    continue
+                if _is_external_page(nxt):
+                    if not allow_external or max_external_total <= 0:
+                        continue
+                    if ext_enqueued_total >= max_external_total:
+                        continue
+                    oh = _target_host(nxt)
+                    if ext_enq_by_host.get(oh, 0) >= max_external_per_host:
+                        continue
+                    ext_enq_by_host[oh] = ext_enq_by_host.get(oh, 0) + 1
+                    ext_enqueued_total += 1
+                logger.info(
+                    "crawl.pagination_synthetic_next",
+                    extra={"from_url": url, "next_url": nxt},
+                )
                 queue.append(nxt)
 
         if queue and pages_done < max_pages:
@@ -248,5 +306,9 @@ def run_multi_page_scrape(
             "pages_done": pages_done,
             "status": "completed",
         },
+    )
+    logger.info(
+        "crawl.pagination_finished",
+        extra={"pages_done": pages_done, "max_pages": max_pages, "seed_url": seed_url},
     )
     return {"last_payload": last_doc, "pages_done": pages_done}

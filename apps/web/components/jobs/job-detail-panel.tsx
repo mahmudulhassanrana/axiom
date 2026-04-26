@@ -4,11 +4,28 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { FormattedDate } from "@/components/formatted-date";
 import { apiDownloadBlob, apiFetch, getApiToken } from "@/lib/api";
-import type { AuditLogEntry, ExtractedData, JobDetail } from "@/lib/jobs-types";
+import type { AuditLogEntry, ExtractedData, JobDetail, MemberRecord } from "@/lib/jobs-types";
 
 function payloadMeta(r: ExtractedData): Record<string, unknown> {
   const m = r.payload?.metadata;
   return m && typeof m === "object" && !Array.isArray(m) ? (m as Record<string, unknown>) : {};
+}
+
+function memberRecordsOf(r: ExtractedData): MemberRecord[] {
+  const raw = r.payload?.metadata?.member_records;
+  return Array.isArray(raw) ? (raw as MemberRecord[]) : [];
+}
+
+function dedupeMembers(rows: MemberRecord[]): MemberRecord[] {
+  const seen = new Set<string>();
+  const out: MemberRecord[] = [];
+  for (const m of rows) {
+    const k = `${m.membership_id ?? ""}|${m.company ?? ""}|${m.name ?? ""}|${m.source_url ?? ""}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(m);
+  }
+  return out;
 }
 
 function crawlSourceOf(r: ExtractedData): string {
@@ -129,6 +146,11 @@ export function JobDetailPanel({ jobId }: Props) {
     () => groupByPageUrl(results.filter((r) => crawlSourceOf(r) === "external")),
     [results],
   );
+  const allMemberRecords = useMemo(() => {
+    const acc: MemberRecord[] = [];
+    for (const r of results) acc.push(...memberRecordsOf(r));
+    return dedupeMembers(acc);
+  }, [results]);
 
   async function onExport(kind: "json" | "csv" | "pdf") {
     setExporting(kind);
@@ -263,6 +285,60 @@ export function JobDetailPanel({ jobId }: Props) {
         )}
       </section>
 
+      {allMemberRecords.length > 0 ? (
+        <section className="rounded-xl border border-border-subtle bg-surface-raised/80 p-5 shadow-glow">
+          <h2 className="text-sm font-semibold text-slate-200">
+            Member directory — all pages ({allMemberRecords.length})
+          </h2>
+          <p className="mt-1 text-xs text-slate-500">
+            Combined member/API rows from every extracted page in this job (deduped).
+          </p>
+          <div className="mt-3 max-h-[min(60vh,520px)] overflow-auto rounded border border-border-subtle">
+            <table className="w-full min-w-[640px] border-collapse text-left text-xs text-slate-300">
+              <thead className="sticky top-0 z-[1] bg-surface-raised/95 backdrop-blur">
+                <tr className="border-b border-border-subtle text-[10px] uppercase tracking-wide text-slate-500">
+                  <th className="px-2 py-2 font-medium">Company</th>
+                  <th className="px-2 py-2 font-medium">Name</th>
+                  <th className="px-2 py-2 font-medium">Membership</th>
+                  <th className="px-2 py-2 font-medium">Type</th>
+                  <th className="px-2 py-2 font-medium">Phone</th>
+                  <th className="px-2 py-2 font-medium">Email</th>
+                  <th className="px-2 py-2 font-medium">Web</th>
+                </tr>
+              </thead>
+              <tbody>
+                {allMemberRecords.map((m, idx) => (
+                  <tr
+                    key={`all-${m.membership_id ?? idx}-${idx}`}
+                    className="border-b border-border-subtle/60 odd:bg-surface/40"
+                  >
+                    <td className="max-w-[180px] px-2 py-1.5 align-top">{m.company ?? "—"}</td>
+                    <td className="max-w-[120px] px-2 py-1.5 align-top">{m.name ?? "—"}</td>
+                    <td className="whitespace-nowrap px-2 py-1.5 align-top font-mono text-[10px] text-slate-400">
+                      {m.membership_id ?? "—"}
+                    </td>
+                    <td className="px-2 py-1.5 align-top">{m.membership_type ?? "—"}</td>
+                    <td className="whitespace-nowrap px-2 py-1.5 align-top font-mono text-[10px]">
+                      {m.phone ?? "—"}
+                    </td>
+                    <td className="max-w-[140px] break-all px-2 py-1.5 align-top">{m.email ?? "—"}</td>
+                    <td className="max-w-[120px] break-all px-2 py-1.5 align-top text-accent/90">
+                      {m.website ? (
+                        <a href={m.website} target="_blank" rel="noreferrer" className="hover:underline">
+                          {m.website}
+                        </a>
+                      ) : (
+                        "—"
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      ) : null}
+
       {internalGrouped.length > 0 ? (
         <section className="rounded-xl border border-border-subtle bg-surface-raised/80 p-5 shadow-glow">
           <h2 className="text-sm font-semibold text-slate-200">
@@ -286,6 +362,7 @@ export function JobDetailPanel({ jobId }: Props) {
                 (typeof payloadMeta(row).content_quality_score === "number"
                   ? (payloadMeta(row).content_quality_score as number)
                   : null);
+              const members = memberRecordsOf(row);
               return (
                 <li key={`i:${pageUrl}`} className="rounded-lg border border-border-subtle bg-surface/60">
                   <button
@@ -315,6 +392,56 @@ export function JobDetailPanel({ jobId }: Props) {
                               </li>
                             ))}
                           </ul>
+                        </div>
+                      ) : null}
+                      {members.length > 0 ? (
+                        <div>
+                          <div className="text-xs uppercase text-slate-500">
+                            Member records ({members.length})
+                          </div>
+                          <div className="mt-2 max-h-[min(60vh,520px)] overflow-auto rounded border border-border-subtle">
+                            <table className="w-full min-w-[640px] border-collapse text-left text-xs text-slate-300">
+                              <thead className="sticky top-0 z-[1] bg-surface-raised/95 backdrop-blur">
+                                <tr className="border-b border-border-subtle text-[10px] uppercase tracking-wide text-slate-500">
+                                  <th className="px-2 py-2 font-medium">Company</th>
+                                  <th className="px-2 py-2 font-medium">Name</th>
+                                  <th className="px-2 py-2 font-medium">Membership</th>
+                                  <th className="px-2 py-2 font-medium">Type</th>
+                                  <th className="px-2 py-2 font-medium">Phone</th>
+                                  <th className="px-2 py-2 font-medium">Email</th>
+                                  <th className="px-2 py-2 font-medium">Web</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {members.map((m, idx) => (
+                                  <tr
+                                    key={`${m.membership_id ?? idx}-${idx}`}
+                                    className="border-b border-border-subtle/60 odd:bg-surface/40"
+                                  >
+                                    <td className="max-w-[180px] px-2 py-1.5 align-top">{m.company ?? "—"}</td>
+                                    <td className="max-w-[120px] px-2 py-1.5 align-top">{m.name ?? "—"}</td>
+                                    <td className="whitespace-nowrap px-2 py-1.5 align-top font-mono text-[10px] text-slate-400">
+                                      {m.membership_id ?? "—"}
+                                    </td>
+                                    <td className="px-2 py-1.5 align-top">{m.membership_type ?? "—"}</td>
+                                    <td className="whitespace-nowrap px-2 py-1.5 align-top font-mono text-[10px]">
+                                      {m.phone ?? "—"}
+                                    </td>
+                                    <td className="max-w-[140px] break-all px-2 py-1.5 align-top">{m.email ?? "—"}</td>
+                                    <td className="max-w-[120px] break-all px-2 py-1.5 align-top text-accent/90">
+                                      {m.website ? (
+                                        <a href={m.website} target="_blank" rel="noreferrer" className="hover:underline">
+                                          {m.website}
+                                        </a>
+                                      ) : (
+                                        "—"
+                                      )}
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
                         </div>
                       ) : null}
                       <div>

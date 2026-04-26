@@ -7,11 +7,7 @@ from datetime import datetime, timezone
 from typing import Annotated, Any
 from uuid import UUID
 
-from axiom_compliance import (
-    ComplianceSettings,
-    ScrapeComplianceContext,
-    run_compliance_before_fetch,
-)
+from axiom_compliance import ComplianceSettings, ScrapeComplianceContext
 from axiom_compliance.exceptions import ComplianceError
 from axiom_compliance.lists import hostname_for_url
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -19,6 +15,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from axiom_api.core.compliance_fetch import run_compliance_before_fetch
 from axiom_api.core.compliance_http import compliance_http_exception
 from axiom_api.core.public_messages import client_safe_detail
 from axiom_api.db.deps import get_db
@@ -290,6 +287,7 @@ async def run_source(
             ctx=ctx,
             settings=settings,
             preverified=False,
+            skip_robots_check=bool(payload.get("robots_override")),
         )
     except ComplianceError as exc:
         await record_scrape_audit_event(

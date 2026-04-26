@@ -40,6 +40,13 @@ class ScrapeRequest(BaseModel):
     crawl_max_external_pages: int = Field(default=25, ge=0, le=50)
     crawl_max_external_per_host: int = Field(default=5, ge=1, le=20)
     pre_fetch_jitter_max_seconds: float = Field(default=0.0, ge=0.0, le=2.0)
+    robots_override: bool = Field(
+        default=False,
+        description=(
+            "When true and COMPLIANCE_ROBOTS_OVERRIDE_ENABLED=1, robots.txt is not enforced "
+            "(audited). Default false."
+        ),
+    )
 
     model_config = {"populate_by_name": True}
 

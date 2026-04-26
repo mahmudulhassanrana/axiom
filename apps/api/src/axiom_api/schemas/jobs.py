@@ -27,6 +27,7 @@ class ScrapeJobPayload(BaseModel):
     pre_fetch_jitter_max_seconds: float = Field(default=0.0, ge=0.0, le=2.0)
     crawl_type: Literal["single_page", "multi_page", "sitemap"] | None = None
     sitemap_url: str | None = None
+    robots_override: bool = False
 
 
 class JobCreateRequest(BaseModel):
@@ -99,6 +100,10 @@ class JobCreateRequest(BaseModel):
         default=None,
         description="Optional sitemap URL when crawl_type is sitemap.",
     )
+    robots_override: bool = Field(
+        default=False,
+        description="Requires COMPLIANCE_ROBOTS_OVERRIDE_ENABLED; skips robots.txt when true (audited).",
+    )
 
     @field_validator("sitemap_url", mode="before")
     @classmethod
@@ -157,6 +162,9 @@ class ExtractedDataPublic(BaseModel):
     external_links: list[dict[str, JSONValue]] = Field(default_factory=list)
     crawl_source: str | None = None
     content_quality_score: float | None = None
+    file_links: list[dict[str, JSONValue]] = Field(default_factory=list)
+    structured_entities: dict[str, JSONValue] = Field(default_factory=dict)
+    extraction_type: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -198,6 +206,15 @@ class ExtractedDataPublic(BaseModel):
                     d["images"] = pl.get("images") if isinstance(pl.get("images"), list) else []
                 if not d.get("files"):
                     d["files"] = pl.get("files") if isinstance(pl.get("files"), list) else []
+                if not d.get("file_links"):
+                    fl = pl.get("file_links") if isinstance(pl.get("file_links"), list) else None
+                    d["file_links"] = fl if fl is not None else list(d.get("files") or [])
+                if not d.get("structured_entities") and isinstance(pl.get("structured_entities"), dict):
+                    d["structured_entities"] = pl["structured_entities"]
+                elif not d.get("structured_entities"):
+                    d["structured_entities"] = {}
+                if d.get("extraction_type") is None:
+                    d["extraction_type"] = pl.get("extraction_type") if isinstance(pl.get("extraction_type"), str) else None
                 cls._enrich_from_metadata(pl, d)
             if d.get("full_text") is None and isinstance(d.get("text_content"), str):
                 d["full_text"] = d["text_content"]
@@ -210,6 +227,17 @@ class ExtractedDataPublic(BaseModel):
         page_url = pl.get("page_url") if isinstance(pl.get("page_url"), str) else None
         imgs = pl.get("images") if isinstance(pl.get("images"), list) else []
         files = pl.get("files") if isinstance(pl.get("files"), list) else []
+        flinks = pl.get("file_links") if isinstance(pl.get("file_links"), list) else files
+        struct_e = pl.get("structured_entities") if isinstance(pl.get("structured_entities"), dict) else {}
+        ext_t = getattr(data, "extraction_type", None) or (
+            pl.get("extraction_type") if isinstance(pl.get("extraction_type"), str) else None
+        )
+        col_fl = getattr(data, "file_links", None)
+        col_se = getattr(data, "structured_entities", None)
+        if isinstance(col_fl, list) and col_fl:
+            flinks = col_fl
+        if isinstance(col_se, dict) and col_se:
+            struct_e = col_se
         out: dict[str, Any] = {
             "id": data.id,
             "run_id": data.run_id,
@@ -227,6 +255,9 @@ class ExtractedDataPublic(BaseModel):
             "page_url": page_url or data.source_url,
             "images": imgs,
             "files": files,
+            "file_links": flinks,
+            "structured_entities": struct_e,
+            "extraction_type": ext_t,
             "full_text": None,
             "headings": [],
             "internal_links": [],
@@ -259,6 +290,11 @@ class JobPublic(BaseModel):
     updated_at: datetime
 
     model_config = {"from_attributes": True}
+
+    @computed_field
+    @property
+    def is_restricted(self) -> bool:
+        return self.status == "restricted"
 
 
 class JobDetailPublic(JobPublic):

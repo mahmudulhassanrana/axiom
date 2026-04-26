@@ -5,16 +5,23 @@ import logging
 import uuid
 
 import requests
-from axiom_compliance import ComplianceSettings, ScrapeComplianceContext, run_compliance_before_fetch
+from axiom_compliance import ComplianceSettings, ScrapeComplianceContext
 from axiom_compliance.exceptions import ComplianceError
 from axiom_compliance.lists import hostname_for_url
-from axiom_extractors import ExtractedDocument, HtmlExtractor, PlaywrightExtractor
+from axiom_extractors import (
+    ExtractedDocument,
+    HtmlExtractor,
+    PlaywrightExtractor,
+    extract_for_crawl_engine,
+)
+from axiom_extractors.entities import extract_structured_entities
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
 from kombu.exceptions import OperationalError
 from playwright.sync_api import Error as PlaywrightError
 
 from axiom_api.celery_client import AXIOM_QUEUE, get_celery_app
+from axiom_api.core.compliance_fetch import run_compliance_before_fetch
 from axiom_api.core.compliance_http import compliance_http_exception
 from axiom_api.core.public_messages import client_safe_detail, format_upstream_failure
 from axiom_api.db.models.user import User
@@ -82,6 +89,7 @@ async def scrape(
             ctx=ctx,
             settings=settings,
             preverified=False,
+            skip_robots_check=bool(payload.robots_override),
         )
     except ComplianceError as exc:
         await record_scrape_audit_event(
@@ -118,6 +126,7 @@ async def scrape(
                     "crawl_max_external_pages": payload.crawl_max_external_pages,
                     "crawl_max_external_per_host": payload.crawl_max_external_per_host,
                     "pre_fetch_jitter_max_seconds": payload.pre_fetch_jitter_max_seconds,
+                    "robots_override": bool(payload.robots_override),
                 },
                 queue=AXIOM_QUEUE,
             )
@@ -155,18 +164,19 @@ async def scrape(
 
     html_ex, pw_ex = _select_extractors(settings)
     try:
-        if payload.engine == "html_requests":
-            doc = await asyncio.to_thread(
-                html_ex.extract,
-                url_str,
-                include_html=payload.include_html,
-            )
-        else:
-            doc = await asyncio.to_thread(
-                pw_ex.extract,
-                url_str,
-                include_html=payload.include_html,
-            )
+        doc, ext_t = await asyncio.to_thread(
+            extract_for_crawl_engine,
+            url=url_str,
+            include_html=payload.include_html,
+            engine=payload.engine,
+            html_ex=html_ex,
+            pw_ex=pw_ex,
+        )
+        ents = extract_structured_entities(html=doc.html, text=doc.text)
+        meta = dict(doc.metadata) if isinstance(doc.metadata, dict) else {}
+        meta["structured_entities"] = ents
+        meta["extraction_type"] = ext_t
+        doc = doc.model_copy(update={"metadata": meta})
     except ValueError as exc:
         await record_scrape_audit_event(
             correlation_id=correlation_id,

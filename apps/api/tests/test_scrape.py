@@ -42,6 +42,7 @@ def test_scrape_async_enqueues_celery_task() -> None:
     assert st_kw["url"].rstrip("/") == "https://example.com"
     assert st_kw["engine"] == "html_requests"
     assert st_kw["include_html"] is False
+    assert st_kw.get("robots_override") is False
     assert gc.return_value.send_task.call_args.args[0] == "axiom.scrape"
     assert gc.return_value.send_task.call_args.kwargs.get("queue") == "axiom"
 
@@ -49,8 +50,8 @@ def test_scrape_async_enqueues_celery_task() -> None:
 def test_scrape_sync_html_uses_extractor() -> None:
     doc = _sample_doc()
     with patch(
-        "axiom_api.routes.scrape._html_extractor.extract",
-        return_value=doc,
+        "axiom_api.routes.scrape.extract_for_crawl_engine",
+        return_value=(doc, "static"),
     ) as mocked:
         r = client.post(
             "/scrape",
@@ -60,7 +61,7 @@ def test_scrape_sync_html_uses_extractor() -> None:
     mocked.assert_called_once()
     assert mocked.call_args is not None
     assert mocked.call_args.kwargs["include_html"] is False
-    assert mocked.call_args.args[0].rstrip("/") == "https://example.com"
+    assert mocked.call_args.kwargs["url"].rstrip("/") == "https://example.com"
     body = r.json()
     assert body["url"].rstrip("/") == "https://example.com"
     assert body["text"] == "hello"
@@ -70,8 +71,8 @@ def test_scrape_sync_playwright_uses_extractor() -> None:
     doc = _sample_doc()
     doc = doc.model_copy(update={"extractor_kind": "playwright"})
     with patch(
-        "axiom_api.routes.scrape._playwright_extractor.extract",
-        return_value=doc,
+        "axiom_api.routes.scrape.extract_for_crawl_engine",
+        return_value=(doc, "js"),
     ) as mocked:
         r = client.post(
             "/scrape",
@@ -84,7 +85,7 @@ def test_scrape_sync_playwright_uses_extractor() -> None:
 
 def test_scrape_value_error_maps_to_413() -> None:
     with patch(
-        "axiom_api.routes.scrape._html_extractor.extract",
+        "axiom_api.routes.scrape.extract_for_crawl_engine",
         side_effect=ValueError("Response body exceeds max_bytes=1"),
     ):
         r = client.post("/scrape", json={"url": "https://example.com", "async": False})
@@ -106,7 +107,7 @@ def test_scrape_http_error_maps_to_502() -> None:
     resp.status_code = 502
     err = requests.HTTPError(response=resp)
     with patch(
-        "axiom_api.routes.scrape._html_extractor.extract",
+        "axiom_api.routes.scrape.extract_for_crawl_engine",
         side_effect=err,
     ):
         r = client.post("/scrape", json={"url": "https://example.com", "async": False})
@@ -115,7 +116,7 @@ def test_scrape_http_error_maps_to_502() -> None:
 
 def test_scrape_connection_error_maps_to_502() -> None:
     with patch(
-        "axiom_api.routes.scrape._html_extractor.extract",
+        "axiom_api.routes.scrape.extract_for_crawl_engine",
         side_effect=requests.ConnectionError("refused"),
     ):
         r = client.post("/scrape", json={"url": "https://example.com", "async": False})

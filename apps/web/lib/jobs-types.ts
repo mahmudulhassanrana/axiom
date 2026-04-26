@@ -22,6 +22,19 @@ export type Run = {
   metrics: Record<string, unknown> | null;
 };
 
+export type MemberRecord = {
+  name?: string | null;
+  company?: string | null;
+  address?: string | null;
+  phone?: string | null;
+  email?: string | null;
+  website?: string | null;
+  membership_id?: string | null;
+  membership_type?: string | null;
+  source_url?: string | null;
+  raw?: Record<string, unknown>;
+};
+
 export type ExtractedData = {
   id: string;
   run_id: string;
@@ -31,7 +44,7 @@ export type ExtractedData = {
   text_content: string | null;
   payload: {
     links?: { href: string; text?: string | null }[];
-    metadata?: Record<string, unknown>;
+    metadata?: Record<string, unknown> & { member_records?: MemberRecord[] };
     language?: string | null;
     images?: unknown[];
     files?: unknown[];

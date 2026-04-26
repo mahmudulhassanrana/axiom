@@ -41,6 +41,13 @@ def job_results_json_bytes(job: Job, rows: list[ExtractedData]) -> tuple[bytes, 
                 "links": pl.get("links") or [],
                 "images": pl.get("images") or [],
                 "files": pl.get("files") or [],
+                "file_links": pl.get("file_links") or pl.get("files") or [],
+                "structured_entities": pl.get("structured_entities")
+                if isinstance(pl.get("structured_entities"), dict)
+                else {},
+                "extraction_type": getattr(r, "extraction_type", None)
+                or (meta.get("extraction_type") if isinstance(meta.get("extraction_type"), str) else None)
+                or (pl.get("extraction_type") if isinstance(pl.get("extraction_type"), str) else None),
                 "metadata": meta,
                 "created_at": r.created_at.isoformat() if r.created_at else None,
             },
@@ -67,6 +74,11 @@ def job_results_csv_bytes(job: Job, rows: list[ExtractedData]) -> tuple[bytes, s
             "link_count",
             "image_count",
             "file_count",
+            "emails",
+            "phones",
+            "names",
+            "addresses",
+            "extraction_type",
             "http_status",
         ],
     )
@@ -76,6 +88,14 @@ def job_results_csv_bytes(job: Job, rows: list[ExtractedData]) -> tuple[bytes, s
         links = pl.get("links") or []
         imgs = pl.get("images") or []
         files = pl.get("files") or []
+        se = pl.get("structured_entities") if isinstance(pl.get("structured_entities"), dict) else {}
+        em = ";".join(str(x) for x in (se.get("emails") or [])[:50])
+        ph = ";".join(str(x) for x in (se.get("phones") or [])[:50])
+        nm = ";".join(str(x) for x in (se.get("names") or [])[:30])
+        ad = ";".join(str(x) for x in (se.get("addresses") or [])[:20])
+        ext_t = getattr(r, "extraction_type", None) or (
+            pl.get("extraction_type") if isinstance(pl.get("extraction_type"), str) else ""
+        )
         text = (r.text_content or "")[:2000]
         w.writerow(
             [
@@ -88,6 +108,11 @@ def job_results_csv_bytes(job: Job, rows: list[ExtractedData]) -> tuple[bytes, s
                 len(links) if isinstance(links, list) else 0,
                 len(imgs) if isinstance(imgs, list) else 0,
                 len(files) if isinstance(files, list) else 0,
+                em,
+                ph,
+                nm,
+                ad,
+                ext_t or "",
                 r.http_status if r.http_status is not None else "",
             ],
         )
@@ -234,6 +259,10 @@ def job_results_pdf_bytes(job: Job, rows: list[ExtractedData]) -> tuple[bytes, s
             meta_lines.append(f"Crawl source: {crawl_source}")
         if quality is not None:
             meta_lines.append(f"Content quality: {quality}")
+        se = pl.get("structured_entities") if isinstance(pl.get("structured_entities"), dict) else {}
+        ext_type = getattr(r, "extraction_type", None) or pl.get("extraction_type")
+        if ext_type:
+            meta_lines.append(f"Extraction type: {ext_type}")
         for ml in meta_lines:
             if not use_unicode:
                 ml = _ascii_fallback(ml, max_len=4000)
@@ -272,6 +301,25 @@ def job_results_pdf_bytes(job: Job, rows: list[ExtractedData]) -> tuple[bytes, s
                         line = _ascii_fallback(line, max_len=500)
                     _ensure_vertical_room(pdf, row_h * 2)
                     _safe_multi_cell(pdf, row_h, line, use_unicode=use_unicode)
+
+        if se:
+            _write_section_title(pdf, "Detected entities (sample)", use_unicode=use_unicode, lh=lh)
+            pdf.set_font(fam, "", 8)
+            eh = max(4.0, lh - 0.5)
+            for label, key in (
+                ("Emails", "emails"),
+                ("Phones", "phones"),
+                ("Names", "names"),
+                ("Addresses", "addresses"),
+            ):
+                vals = se.get(key) if isinstance(se.get(key), list) else []
+                if not vals:
+                    continue
+                line = f"{label}: " + "; ".join(str(v)[:120] for v in vals[:12])
+                if not use_unicode:
+                    line = _ascii_fallback(line, max_len=2000)
+                _ensure_vertical_room(pdf, eh * 2)
+                _safe_multi_cell(pdf, eh, line, use_unicode=use_unicode)
 
         _write_section_title(pdf, "Links (first 60)", use_unicode=use_unicode, lh=lh)
         pdf.set_font(fam, "", 8)

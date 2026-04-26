@@ -8,13 +8,14 @@ from typing import Any
 from uuid import UUID
 
 import psycopg
+from axiom_compliance import ComplianceSettings, ScrapeComplianceContext
+from axiom_compliance.exceptions import ComplianceError
+from axiom_compliance.lists import hostname_for_url
 from croniter import croniter
 from psycopg.rows import dict_row
 
-from axiom_compliance import ComplianceSettings, ScrapeComplianceContext, run_compliance_before_fetch
-from axiom_compliance.exceptions import ComplianceError
-from axiom_compliance.lists import hostname_for_url
 from axiom_worker.celery_app import app as celery_app
+from axiom_worker.compliance_fetch import run_compliance_before_fetch
 from axiom_worker.db_sync import get_psycopg_dsn
 from axiom_worker.scrape_audit import record_scrape_audit_event_sync
 
@@ -113,6 +114,7 @@ def _dispatch_one(conn: psycopg.Connection, row: dict[str, Any]) -> None:
             ctx=ctx,
             settings=settings,
             preverified=False,
+            skip_robots_check=bool(payload.get("robots_override")),
         )
     except ComplianceError as exc:
         record_scrape_audit_event_sync(
@@ -154,6 +156,7 @@ def _dispatch_one(conn: psycopg.Connection, row: dict[str, Any]) -> None:
         "crawl_max_external_pages": int(payload.get("crawl_max_external_pages") or 25),
         "crawl_max_external_per_host": int(payload.get("crawl_max_external_per_host") or 5),
         "pre_fetch_jitter_max_seconds": float(payload.get("pre_fetch_jitter_max_seconds") or 0.0),
+        "robots_override": bool(payload.get("robots_override")),
     }
 
     with conn.cursor() as cur:
@@ -205,6 +208,7 @@ def _dispatch_one(conn: psycopg.Connection, row: dict[str, Any]) -> None:
             "pre_fetch_jitter_max_seconds": job_payload["pre_fetch_jitter_max_seconds"],
             "crawl_type": crawl_type,
             "sitemap_url": sitemap_str,
+            "robots_override": bool(job_payload.get("robots_override")),
         },
         queue=str(celery_app.conf.task_default_queue),
     )

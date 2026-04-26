@@ -30,9 +30,10 @@ export function ApiTokenForm() {
     >
       <h2 className="text-sm font-semibold text-slate-200">API token</h2>
       <p className="mt-1 text-xs leading-relaxed text-slate-500">
-        Paste a JWT from <code className="rounded bg-surface px-1 py-0.5 font-mono text-[11px] text-slate-400">POST /auth/login</code>{" "}
-        or use an API key as Bearer (if your deployment supports it). Stored only in this browser (
-        <code className="font-mono text-[11px]">{STORAGE_TOKEN_KEY}</code>).
+        If API requests return <span className="font-medium text-slate-400">401</span>, paste a JWT from{" "}
+        <code className="rounded bg-surface px-1 py-0.5 font-mono text-[11px] text-slate-400">POST /auth/login</code>{" "}
+        or use an API key as the Bearer value (when your deployment supports it), then save. Stored only in this
+        browser (<code className="font-mono text-[11px]">{STORAGE_TOKEN_KEY}</code>).
       </p>
       <textarea
         value={token}

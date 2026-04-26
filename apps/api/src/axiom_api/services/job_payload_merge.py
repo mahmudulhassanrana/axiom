@@ -45,6 +45,7 @@ def build_merged_job_payload(body: JobCreateRequest, source: Source | None) -> d
         "pre_fetch_jitter_max_seconds": body.pre_fetch_jitter_max_seconds
         if "pre_fetch_jitter_max_seconds" in fs
         else sp.get("pre_fetch_jitter_max_seconds", body.pre_fetch_jitter_max_seconds),
+        "robots_override": bool(body.robots_override) if "robots_override" in fs else False,
     }
 
     if source:
@@ -61,5 +62,8 @@ def build_merged_job_payload(body: JobCreateRequest, source: Source | None) -> d
         else:
             out["crawl_type"] = "single_page" if int(out["crawl_max_pages"]) <= 1 else "multi_page"
         out["sitemap_url"] = str(body.sitemap_url).strip() if body.sitemap_url else None
+
+    if str(out.get("crawl_type", "")).strip().lower() == "multi_page":
+        out["crawl_max_pages"] = max(2, int(out["crawl_max_pages"]))
 
     return out

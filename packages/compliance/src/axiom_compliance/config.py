@@ -52,6 +52,7 @@ class ComplianceSettings:
     robots_timeout_seconds: float
     robots_fail_open: bool
     robots_cache_ttl_seconds: float
+    robots_override_enabled: bool
 
     @classmethod
     def from_env(cls) -> ComplianceSettings:
@@ -64,12 +65,13 @@ class ComplianceSettings:
             ).strip(),
             domain_blocklist=_split_domains(os.environ.get("COMPLIANCE_DOMAIN_BLOCKLIST")),
             domain_allowlist=_split_domains(os.environ.get("COMPLIANCE_DOMAIN_ALLOWLIST")),
-            request_delay_seconds=_env_float("COMPLIANCE_REQUEST_DELAY_SECONDS", 0.0),
-            request_jitter_seconds=_env_float("COMPLIANCE_REQUEST_JITTER_SECONDS", 0.35),
+            request_delay_seconds=_env_float("COMPLIANCE_REQUEST_DELAY_SECONDS", 1.0),
+            request_jitter_seconds=_env_float("COMPLIANCE_REQUEST_JITTER_SECONDS", 0.75),
             rate_limit_per_domain=_env_int("COMPLIANCE_RATE_LIMIT_PER_DOMAIN", 30),
             rate_limit_window_seconds=_env_int("COMPLIANCE_RATE_LIMIT_WINDOW_SECONDS", 60),
             redis_url=redis_url.strip() if redis_url and redis_url.strip() else None,
             robots_timeout_seconds=_env_float("COMPLIANCE_ROBOTS_TIMEOUT_SECONDS", 10.0),
             robots_fail_open=_env_bool("COMPLIANCE_ROBOTS_FAIL_OPEN", True),
             robots_cache_ttl_seconds=_env_float("COMPLIANCE_ROBOTS_CACHE_TTL_SECONDS", 3600.0),
+            robots_override_enabled=_env_bool("COMPLIANCE_ROBOTS_OVERRIDE_ENABLED", False),
         )

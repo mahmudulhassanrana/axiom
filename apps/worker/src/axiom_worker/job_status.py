@@ -8,7 +8,7 @@ from axiom_worker.db_sync import get_psycopg_dsn
 
 logger = logging.getLogger(__name__)
 
-ClaimOutcome = Literal["claimed", "completed", "failed", "already_running"]
+ClaimOutcome = Literal["claimed", "completed", "failed", "already_running", "restricted"]
 
 
 def claim_run_for_scrape(run_id: UUID, job_id: UUID, *, celery_retries: int) -> ClaimOutcome:
@@ -74,6 +74,9 @@ def claim_run_for_scrape(run_id: UUID, job_id: UUID, *, celery_retries: int) -> 
                 if st == "failed":
                     conn.rollback()
                     return "failed"
+                if st == "restricted":
+                    conn.rollback()
+                    return "restricted"
                 if st == "running":
                     conn.rollback()
                     if celery_retries > 0:
@@ -175,6 +178,86 @@ def mark_running(run_id: UUID, job_id: UUID) -> None:
     except Exception:
         logger.exception("job_status.mark_running_failed", extra={"run_id": str(run_id)})
         raise
+
+
+def mark_restricted(run_id: UUID, job_id: UUID, message: str, *, metrics: dict[str, Any] | None = None) -> None:
+    """Job/run stopped by policy (e.g. robots.txt) without persisting extracted pages."""
+    dsn = get_psycopg_dsn()
+    if not dsn:
+        logger.error(
+            "job_status.mark_restricted_no_database_url",
+            extra={"run_id": str(run_id), "job_id": str(job_id)},
+        )
+        return
+    try:
+        import psycopg
+        from psycopg.types.json import Json
+    except ImportError as exc:
+        raise RuntimeError("psycopg is required for job status updates.") from exc
+    m = dict(metrics or {})
+    m["compliance"] = "robots_denied"
+    try:
+        conn = psycopg.connect(dsn, connect_timeout=5)
+        try:
+            with conn.cursor() as cur:
+                try:
+                    cur.execute(
+                        """
+                        UPDATE runs SET status = 'restricted', completed_at = NOW(), error_message = %s,
+                            metrics = %s, updated_at = NOW()
+                        WHERE id = %s
+                        """,
+                        (message, Json(m), str(run_id)),
+                    )
+                    cur.execute(
+                        """
+                        UPDATE jobs SET status = 'restricted', is_restricted = true, updated_at = NOW()
+                        WHERE id = %s
+                        """,
+                        (str(job_id),),
+                    )
+                except Exception as exc:
+                    conn.rollback()
+                    if not _is_missing_job_restricted_column(exc):
+                        raise
+                    with conn.cursor() as cur2:
+                        cur2.execute(
+                            """
+                            UPDATE runs SET status = 'restricted', completed_at = NOW(), error_message = %s,
+                                metrics = %s, updated_at = NOW()
+                            WHERE id = %s
+                            """,
+                            (message, Json(m), str(run_id)),
+                        )
+                        cur2.execute(
+                            "UPDATE jobs SET status = 'restricted', updated_at = NOW() WHERE id = %s",
+                            (str(job_id),),
+                        )
+            conn.commit()
+            logger.info(
+                "job_status.mark_restricted done job_id=%s run_id=%s",
+                job_id,
+                run_id,
+            )
+        finally:
+            conn.close()
+    except Exception:
+        logger.exception("job_status.mark_restricted_failed", extra={"run_id": str(run_id)})
+        raise
+
+
+def _is_missing_job_restricted_column(exc: BaseException) -> bool:
+    if type(exc).__name__ == "UndefinedColumn":
+        return True
+    try:
+        from psycopg.errors import UndefinedColumn
+
+        if isinstance(exc, UndefinedColumn):
+            return True
+    except ImportError:
+        pass
+    msg = str(exc).lower()
+    return "is_restricted" in msg and "does not exist" in msg
 
 
 def mark_succeeded(run_id: UUID, job_id: UUID, metrics: dict[str, Any]) -> None:

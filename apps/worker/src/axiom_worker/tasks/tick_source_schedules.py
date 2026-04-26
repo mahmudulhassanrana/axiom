@@ -8,13 +8,14 @@ from typing import Any
 from uuid import UUID
 
 import psycopg
+from axiom_compliance import ComplianceSettings, ScrapeComplianceContext
+from axiom_compliance.exceptions import ComplianceError
+from axiom_compliance.lists import hostname_for_url
 from croniter import croniter
 from psycopg.rows import dict_row
 
-from axiom_compliance import ComplianceSettings, ScrapeComplianceContext, run_compliance_before_fetch
-from axiom_compliance.exceptions import ComplianceError
-from axiom_compliance.lists import hostname_for_url
 from axiom_worker.celery_app import app as celery_app
+from axiom_worker.compliance_fetch import run_compliance_before_fetch
 from axiom_worker.db_sync import get_psycopg_dsn
 from axiom_worker.scrape_audit import record_scrape_audit_event_sync
 
@@ -158,6 +159,8 @@ def _dispatch_one(conn: psycopg.Connection, row: dict[str, Any]) -> None:
     allow_ext = bool(row.get("allow_external", False))
     sitemap_url = row.get("sitemap_url")
     sitemap_str = str(sitemap_url).strip() if sitemap_url else None
+    sched_cfg = row.get("schedule_config") if isinstance(row.get("schedule_config"), dict) else {}
+    robots_ov = bool(sched_cfg.get("robots_override"))
 
     correlation_id = uuid.uuid4()
     cid = correlation_id
@@ -176,6 +179,7 @@ def _dispatch_one(conn: psycopg.Connection, row: dict[str, Any]) -> None:
             ctx=ctx,
             settings=settings,
             preverified=False,
+            skip_robots_check=robots_ov,
         )
     except ComplianceError as exc:
         record_scrape_audit_event_sync(
@@ -211,6 +215,7 @@ def _dispatch_one(conn: psycopg.Connection, row: dict[str, Any]) -> None:
         "crawl_max_external_pages": 25,
         "crawl_max_external_per_host": 5,
         "pre_fetch_jitter_max_seconds": 0.0,
+        "robots_override": robots_ov,
     }
 
     with conn.cursor() as cur:
@@ -260,6 +265,7 @@ def _dispatch_one(conn: psycopg.Connection, row: dict[str, Any]) -> None:
             "pre_fetch_jitter_max_seconds": 0.0,
             "crawl_type": crawl_type,
             "sitemap_url": sitemap_str,
+            "robots_override": robots_ov,
         },
         queue=str(celery_app.conf.task_default_queue),
     )

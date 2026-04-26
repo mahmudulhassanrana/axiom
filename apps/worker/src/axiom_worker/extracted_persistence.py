@@ -39,8 +39,21 @@ def _parse_published(meta: dict[str, Any]) -> datetime | None:
     return None
 
 
+def _undefined_column(exc: BaseException) -> bool:
+    if type(exc).__name__ == "UndefinedColumn":
+        return True
+    try:
+        from psycopg.errors import UndefinedColumn
+
+        return isinstance(exc, UndefinedColumn)
+    except ImportError:
+        pass
+    msg = str(exc).lower()
+    return "extracted_data" in msg and "does not exist" in msg
+
+
 def insert_extracted_data(run_id: UUID, doc: dict[str, Any]) -> None:
-    """Insert one row; ``doc`` is ``ExtractedDocument.to_json_dict()``."""
+    """Insert one row; ``doc`` is ``ExtractedDocument.to_json_dict()`` plus worker enrichments."""
     from axiom_worker.db_sync import get_psycopg_dsn
 
     dsn = get_psycopg_dsn()
@@ -68,6 +81,8 @@ def insert_extracted_data(run_id: UUID, doc: dict[str, Any]) -> None:
         "page_url",
         "images",
         "files",
+        "file_links",
+        "structured_entities",
     ):
         if key in doc and doc[key] is not None:
             payload[key] = doc[key]
@@ -82,6 +97,26 @@ def insert_extracted_data(run_id: UUID, doc: dict[str, Any]) -> None:
     city = _meta_str(meta, "city", "geo_city", "location_city")
     published_date = _parse_published(meta)
 
+    images_val = doc.get("images") if isinstance(doc.get("images"), list) else None
+    file_links_val = doc.get("file_links")
+    if not isinstance(file_links_val, list):
+        file_links_val = doc.get("files") if isinstance(doc.get("files"), list) else None
+    struct_val = doc.get("structured_entities") if isinstance(doc.get("structured_entities"), dict) else None
+    ext_type = doc.get("extraction_type")
+    if ext_type is not None:
+        ext_type = str(ext_type)[:32] if str(ext_type).strip() else None
+    crawl_depth = doc.get("crawl_depth")
+    if crawl_depth is None and isinstance(meta.get("crawl_depth"), (int, float, str)):
+        try:
+            crawl_depth = int(meta["crawl_depth"])
+        except (TypeError, ValueError):
+            crawl_depth = None
+    elif crawl_depth is not None:
+        try:
+            crawl_depth = int(crawl_depth)
+        except (TypeError, ValueError):
+            crawl_depth = None
+
     base_params = (
         str(row_id),
         str(run_id),
@@ -93,48 +128,78 @@ def insert_extracted_data(run_id: UUID, doc: dict[str, Any]) -> None:
         extractor_kind,
         http_status,
     )
+
+    extended_sql = """
+        INSERT INTO extracted_data (
+            id, run_id, source_url, final_url, title, text_content,
+            payload, extractor_kind, http_status,
+            country, city, published_date,
+            images, file_links, structured_entities, extraction_type, crawl_depth, is_restricted,
+            created_at, updated_at
+        ) VALUES (
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW()
+        )
+        """
+    extended_params = base_params + (
+        country,
+        city,
+        published_date,
+        Json(images_val) if images_val is not None else None,
+        Json(file_links_val) if file_links_val is not None else None,
+        Json(struct_val) if struct_val is not None else None,
+        ext_type,
+        crawl_depth,
+        False,
+    )
+
     full_sql = """
-                    INSERT INTO extracted_data (
-                        id, run_id, source_url, final_url, title, text_content,
-                        payload, extractor_kind, http_status,
-                        country, city, published_date,
-                        created_at, updated_at
-                    ) VALUES (
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW()
-                    )
-                    """
+        INSERT INTO extracted_data (
+            id, run_id, source_url, final_url, title, text_content,
+            payload, extractor_kind, http_status,
+            country, city, published_date,
+            created_at, updated_at
+        ) VALUES (
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW()
+        )
+        """
     legacy_sql = """
-                    INSERT INTO extracted_data (
-                        id, run_id, source_url, final_url, title, text_content,
-                        payload, extractor_kind, http_status,
-                        created_at, updated_at
-                    ) VALUES (
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW()
-                    )
-                    """
+        INSERT INTO extracted_data (
+            id, run_id, source_url, final_url, title, text_content,
+            payload, extractor_kind, http_status,
+            created_at, updated_at
+        ) VALUES (
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW()
+        )
+        """
+
+    attempts: list[tuple[str, tuple[Any, ...]]] = [
+        (extended_sql, extended_params),
+        (full_sql, base_params + (country, city, published_date)),
+        (legacy_sql, base_params),
+    ]
 
     try:
         conn = psycopg.connect(dsn, connect_timeout=10)
         try:
-            try:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        full_sql,
-                        base_params + (country, city, published_date),
-                    )
-                conn.commit()
-            except Exception as exc:
-                conn.rollback()
-                if _is_missing_extracted_column(exc):
-                    logger.warning(
-                        "extracted_persistence.legacy_insert_no_location_columns",
-                        extra={"run_id": str(run_id)},
-                    )
+            last_exc: BaseException | None = None
+            for sql, params in attempts:
+                try:
                     with conn.cursor() as cur:
-                        cur.execute(legacy_sql, base_params)
+                        cur.execute(sql, params)
                     conn.commit()
-                else:
-                    raise
+                    last_exc = None
+                    break
+                except Exception as exc:
+                    conn.rollback()
+                    last_exc = exc
+                    if not _undefined_column(exc):
+                        raise
+                    logger.warning(
+                        "extracted_persistence.insert_fallback",
+                        extra={"run_id": str(run_id), "detail": str(exc)[:200]},
+                    )
+            if last_exc is not None:
+                raise last_exc
         finally:
             conn.close()
     except Exception:
@@ -151,20 +216,4 @@ def insert_extracted_data(run_id: UUID, doc: dict[str, Any]) -> None:
             "extracted_data_id": str(row_id),
             "extractor_kind": extractor_kind,
         },
-    )
-
-
-def _is_missing_extracted_column(exc: BaseException) -> bool:
-    if type(exc).__name__ == "UndefinedColumn":
-        return True
-    try:
-        from psycopg.errors import UndefinedColumn
-
-        if isinstance(exc, UndefinedColumn):
-            return True
-    except ImportError:
-        pass
-    msg = str(exc).lower()
-    return "extracted_data" in msg and "does not exist" in msg and (
-        "country" in msg or "city" in msg or "published_date" in msg
     )

@@ -41,6 +41,7 @@ def run_compliance_before_fetch(
     ctx: ScrapeComplianceContext,
     settings: ComplianceSettings | None = None,
     preverified: bool = False,
+    skip_robots_check: bool = False,
 ) -> str:
     """
     Enforce lists, Redis per-domain rate limit, delay+jitter, and robots.txt.
@@ -95,19 +96,28 @@ def run_compliance_before_fetch(
         **_base_audit(ctx, url, host),
     )
 
-    assert_robots_allow_fetch(
-        url,
-        user_agent=cfg.user_agent,
-        timeout=cfg.robots_timeout_seconds,
-        fail_open=cfg.robots_fail_open,
-        cache_ttl=cfg.robots_cache_ttl_seconds,
-    )
-    log_scrape_audit(
-        "compliance.step",
-        step="robots",
-        outcome="ok",
-        **_base_audit(ctx, url, host),
-    )
+    allow_skip = bool(skip_robots_check and cfg.robots_override_enabled)
+    if allow_skip:
+        log_scrape_audit(
+            "compliance.robots_skipped_override",
+            step="robots",
+            outcome="override",
+            **_base_audit(ctx, url, host),
+        )
+    else:
+        assert_robots_allow_fetch(
+            url,
+            user_agent=cfg.user_agent,
+            timeout=cfg.robots_timeout_seconds,
+            fail_open=cfg.robots_fail_open,
+            cache_ttl=cfg.robots_cache_ttl_seconds,
+        )
+        log_scrape_audit(
+            "compliance.step",
+            step="robots",
+            outcome="ok",
+            **_base_audit(ctx, url, host),
+        )
 
     log_scrape_audit("compliance.passed", **_base_audit(ctx, url, host))
     return host
