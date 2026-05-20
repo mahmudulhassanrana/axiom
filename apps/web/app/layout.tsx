@@ -16,6 +16,8 @@ const geistMono = Geist_Mono({
   display: "swap",
 });
 
+const themeInitScript = `(function(){try{var k='axiom-theme',t=localStorage.getItem(k);var d=t!=='light';document.documentElement.classList.toggle('dark',d);document.documentElement.style.colorScheme=d?'dark':'light';}catch(e){document.documentElement.classList.add('dark');}})();`;
+
 export const metadata: Metadata = {
   title: {
     default: AXIOM_APP_NAME,
@@ -30,10 +32,11 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
-      <body
-        className={`${geistSans.variable} ${geistMono.variable} min-h-screen antialiased bg-slate-950 text-slate-100`}
-      >
+    <html lang="en" suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
+      </head>
+      <body className={`${geistSans.variable} ${geistMono.variable}`}>
         <Providers>{children}</Providers>
       </body>
     </html>

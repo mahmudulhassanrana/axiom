@@ -8,7 +8,7 @@ from typing import Literal
 from axiom_extractors.crawl_constants import MIN_CRAWL_CHARS, MIN_CRAWL_QUALITY
 from axiom_extractors.html_extractor import HtmlExtractor
 from axiom_extractors.models import ExtractedDocument
-from axiom_extractors.playwright_extractor import PlaywrightExtractor
+from axiom_extractors.playwright_extractor import PlaywrightBrowserSession, PlaywrightExtractor
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +50,7 @@ def extract_for_crawl_engine(
     engine: Literal["html_requests", "playwright"],
     html_ex: HtmlExtractor,
     pw_ex: PlaywrightExtractor,
+    pw_session: PlaywrightBrowserSession | None = None,
 ) -> tuple[ExtractedDocument, ExtractionType]:
     """
     ``html_requests``: static fetch first; Playwright if content is empty/low quality.
@@ -57,7 +58,7 @@ def extract_for_crawl_engine(
     """
     if engine == "playwright":
         logger.info("hybrid.js_rendering_triggered", extra={"url": url, "mode": "playwright_engine"})
-        doc = pw_ex.extract(url, include_html=include_html)
+        doc = pw_ex.extract(url, include_html=include_html, session=pw_session)
         return doc, "js"
 
     static_doc = html_ex.extract(url, include_html=True)
@@ -76,7 +77,7 @@ def extract_for_crawl_engine(
         },
     )
     logger.info("hybrid.js_rendering_triggered", extra={"url": url})
-    js_doc = pw_ex.extract(url, include_html=include_html)
+    js_doc = pw_ex.extract(url, include_html=include_html, session=pw_session)
     meta = dict(js_doc.metadata or {})
     meta["hybrid_static_attempted"] = True
     meta["hybrid_static_chars"] = len((static_doc.text or "").strip())

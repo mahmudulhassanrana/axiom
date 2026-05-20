@@ -1,6 +1,7 @@
 import type { Config } from "tailwindcss";
 
 const config: Config = {
+  darkMode: "class",
   content: [
     "./app/**/*.{js,ts,jsx,tsx,mdx}",
     "./components/**/*.{js,ts,jsx,tsx,mdx}",
@@ -12,14 +13,17 @@ const config: Config = {
         mono: ["var(--font-geist-mono)", "ui-monospace", "monospace"],
       },
       colors: {
+        background: "rgb(var(--background) / <alpha-value>)",
+        foreground: "rgb(var(--foreground) / <alpha-value>)",
+        muted: "rgb(var(--muted) / <alpha-value>)",
         surface: {
-          DEFAULT: "#0f1419",
-          raised: "#151b23",
-          overlay: "#1c2430",
+          DEFAULT: "rgb(var(--surface) / <alpha-value>)",
+          raised: "rgb(var(--surface-raised) / <alpha-value>)",
+          overlay: "rgb(var(--surface-overlay) / <alpha-value>)",
         },
         border: {
-          subtle: "#2d3748",
-          DEFAULT: "#3d4f5f",
+          subtle: "rgb(var(--border-subtle) / <alpha-value>)",
+          DEFAULT: "rgb(var(--border) / <alpha-value>)",
         },
         accent: {
           DEFAULT: "#6366f1",
@@ -28,7 +32,7 @@ const config: Config = {
         },
       },
       boxShadow: {
-        glow: "0 0 0 1px rgb(99 102 241 / 0.2), 0 8px 40px -12px rgb(0 0 0 / 0.5)",
+        glow: "0 0 0 1px rgb(var(--glow) / 0.2), 0 8px 40px -12px rgb(0 0 0 / 0.25)",
       },
     },
   },

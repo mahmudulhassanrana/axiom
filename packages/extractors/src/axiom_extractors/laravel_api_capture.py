@@ -49,9 +49,16 @@ def normalize_member_row(obj: dict[str, Any], *, source_url: str) -> dict[str, A
     phone = obj.get("phone") or obj.get("mobile") or obj.get("telephone") or obj.get("contact_number")
     email = obj.get("email") or obj.get("contact_email")
     website = obj.get("website") or obj.get("web") or obj.get("FullUrl")
+    designation = (
+        obj.get("designation")
+        or obj.get("title")
+        or obj.get("role")
+        or obj.get("position")
+    )
     return {
         "name": str(name).strip() if name else None,
         "company": str(company).strip() if company else None,
+        "designation": str(designation).strip() if designation else None,
         "address": str(addr).strip() if addr else None,
         "phone": str(phone).strip() if phone else None,
         "email": str(email).strip() if email else None,
@@ -59,6 +66,7 @@ def normalize_member_row(obj: dict[str, Any], *, source_url: str) -> dict[str, A
         "membership_id": str(obj.get("membership_id") or "").strip() or None,
         "membership_type": str(obj.get("membership_type") or "").strip() or None,
         "source_url": source_url,
+        "detail_page_url": source_url,
         "raw": {k: v for k, v in obj.items() if k in ("short_profile", "establishment_year", "establishment_month", "membership_no")},
     }
 

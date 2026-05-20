@@ -3,14 +3,103 @@
 @tailwind utilities;
 
 @layer base {
+  :root {
+    color-scheme: light;
+    --background: 248 250 252;
+    --foreground: 15 23 42;
+    --muted: 100 116 139;
+    --surface: 255 255 255;
+    --surface-raised: 248 250 252;
+    --surface-overlay: 241 245 249;
+    --border-subtle: 226 232 240;
+    --border: 203 213 225;
+    --glow: 99 102 241;
+  }
+
+  html.dark {
+    color-scheme: dark;
+    --background: 2 6 23;
+    --foreground: 241 245 249;
+    --muted: 148 163 184;
+    --surface: 15 20 25;
+    --surface-raised: 21 27 35;
+    --surface-overlay: 28 36 48;
+    --border-subtle: 45 55 72;
+    --border: 61 79 95;
+    --glow: 99 102 241;
+  }
+
   *,
   *::before,
   *::after {
     box-sizing: border-box;
   }
 
+  html {
+    @apply bg-background text-foreground;
+  }
+
+  body {
+    @apply min-h-screen bg-background text-foreground antialiased;
+  }
+
   a {
     color: inherit;
     text-decoration: none;
+  }
+}
+
+/* Slate utilities used across the app — remap in light mode (Tailwind dark: only toggles with .dark) */
+@layer utilities {
+  html:not(.dark) .text-slate-100 {
+    color: rgb(15 23 42);
+  }
+  html:not(.dark) .text-slate-200 {
+    color: rgb(30 41 59);
+  }
+  html:not(.dark) .text-slate-300 {
+    color: rgb(51 65 85);
+  }
+  html:not(.dark) .text-slate-400 {
+    color: rgb(71 85 105);
+  }
+  html:not(.dark) .text-slate-500 {
+    color: rgb(100 116 139);
+  }
+  html:not(.dark) .text-slate-600 {
+    color: rgb(71 85 105);
+  }
+  html:not(.dark) .text-slate-900 {
+    color: rgb(15 23 42);
+  }
+  html:not(.dark) .placeholder\:text-slate-600::placeholder {
+    color: rgb(148 163 184);
+  }
+  html:not(.dark) .bg-slate-950 {
+    background-color: rgb(248 250 252);
+  }
+  html:not(.dark) .bg-slate-950\/90 {
+    background-color: rgb(255 255 255 / 0.9);
+  }
+  html:not(.dark) .hover\:text-slate-100:hover {
+    color: rgb(15 23 42);
+  }
+  html:not(.dark) .hover\:text-slate-200:hover {
+    color: rgb(30 41 59);
+  }
+  html:not(.dark) .hover\:text-slate-900:hover {
+    color: rgb(15 23 42);
+  }
+  html:not(.dark) .text-indigo-300 {
+    color: rgb(67 56 202);
+  }
+  html:not(.dark) .text-amber-400\/90 {
+    color: rgb(180 83 9);
+  }
+  html:not(.dark) .text-red-300 {
+    color: rgb(185 28 28);
+  }
+  html:not(.dark) .text-emerald-300 {
+    color: rgb(5 150 105);
   }
 }

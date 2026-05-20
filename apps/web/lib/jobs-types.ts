@@ -25,13 +25,18 @@ export type Run = {
 export type MemberRecord = {
   name?: string | null;
   company?: string | null;
+  designation?: string | null;
   address?: string | null;
   phone?: string | null;
   email?: string | null;
   website?: string | null;
+  social_links?: string[] | null;
   membership_id?: string | null;
   membership_type?: string | null;
   source_url?: string | null;
+  parent_list_url?: string | null;
+  parent_url?: string | null;
+  detail_page_url?: string | null;
   raw?: Record<string, unknown>;
 };
 
@@ -62,6 +67,10 @@ export type ExtractedData = {
   external_links?: { href: string; text?: string | null }[];
   crawl_source?: string | null;
   content_quality_score?: number | null;
+  parent_url?: string | null;
+  detail_page_url?: string | null;
+  page_type?: string | null;
+  crawl_session_id?: string | null;
 };
 
 export type RunDetail = Run & {

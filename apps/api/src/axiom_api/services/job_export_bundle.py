@@ -35,6 +35,11 @@ def job_results_json_bytes(job: Job, rows: list[ExtractedData]) -> tuple[bytes, 
                 "internal_links": meta.get("internal_links"),
                 "external_links": meta.get("external_links"),
                 "crawl_source": meta.get("crawl_source"),
+                "parent_url": pl.get("parent_url") or meta.get("parent_url") or meta.get("parent_list_url"),
+                "detail_page_url": pl.get("detail_page_url") or meta.get("detail_page_url"),
+                "page_type": pl.get("page_type") or meta.get("page_type"),
+                "crawl_session_id": pl.get("crawl_session_id") or meta.get("crawl_session_id"),
+                "member_records": meta.get("member_records"),
                 "content_quality_score": meta.get("content_quality_score"),
                 "extractor_kind": r.extractor_kind,
                 "http_status": r.http_status,
@@ -69,6 +74,10 @@ def job_results_csv_bytes(job: Job, rows: list[ExtractedData]) -> tuple[bytes, s
             "extracted_id",
             "run_id",
             "page_url",
+            "parent_url",
+            "detail_page_url",
+            "page_type",
+            "crawl_session_id",
             "title",
             "text_preview",
             "link_count",
@@ -85,6 +94,19 @@ def job_results_csv_bytes(job: Job, rows: list[ExtractedData]) -> tuple[bytes, s
     for r in rows:
         pl = dict(r.payload) if isinstance(r.payload, dict) else {}
         page_url = pl.get("page_url") or r.source_url
+        meta = _meta(pl)
+        parent_url = (
+            pl.get("parent_url")
+            or meta.get("parent_url")
+            or meta.get("parent_list_url")
+            or getattr(r, "parent_url", None)
+            or ""
+        )
+        detail_url = pl.get("detail_page_url") or meta.get("detail_page_url") or getattr(r, "detail_page_url", None) or ""
+        page_type = pl.get("page_type") or meta.get("page_type") or getattr(r, "page_type", None) or ""
+        session_id = (
+            pl.get("crawl_session_id") or meta.get("crawl_session_id") or getattr(r, "crawl_session_id", None) or ""
+        )
         links = pl.get("links") or []
         imgs = pl.get("images") or []
         files = pl.get("files") or []
@@ -103,6 +125,10 @@ def job_results_csv_bytes(job: Job, rows: list[ExtractedData]) -> tuple[bytes, s
                 str(r.id),
                 str(r.run_id),
                 page_url,
+                parent_url,
+                detail_url,
+                page_type,
+                session_id,
                 r.title or "",
                 text,
                 len(links) if isinstance(links, list) else 0,

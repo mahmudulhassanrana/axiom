@@ -311,9 +311,8 @@ def scrape_task(
     if ct == "multi_page":
         crawl_n = max(2, crawl_n)
     use_sitemap_mode = ct == "sitemap"
-    use_multi = (job_uuid is not None and run_uuid is not None) and (
-        crawl_n > 1 or use_sitemap_mode or ct == "multi_page"
-    )
+    # Persisted jobs use crawl_runner so list pages can enqueue member/profile detail URLs.
+    use_multi = job_uuid is not None and run_uuid is not None
 
     if use_multi:
         seed_urls: list[str] | None = None

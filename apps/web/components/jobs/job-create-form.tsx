@@ -11,7 +11,7 @@ export function JobCreateForm({ onCreated }: Props) {
   const [url, setUrl] = useState("https://example.com");
   const [engine, setEngine] = useState<"html_requests" | "playwright">("html_requests");
   const [includeHtml, setIncludeHtml] = useState(false);
-  const [crawlMaxPages, setCrawlMaxPages] = useState(1);
+  const [crawlMaxPages, setCrawlMaxPages] = useState(5);
   const [crawlDelaySeconds, setCrawlDelaySeconds] = useState(1.5);
   const [crawlJitterSeconds, setCrawlJitterSeconds] = useState(0.5);
   const [crawlAllowExternal, setCrawlAllowExternal] = useState(false);
@@ -59,8 +59,8 @@ export function JobCreateForm({ onCreated }: Props) {
     >
       <h2 className="text-sm font-semibold tracking-tight text-slate-200">New scrape job</h2>
       <p className="mt-1 text-xs text-slate-500">
-        Multi-page crawl follows links with delay and jitter. Optional external links stay within page/host caps and
-        compliance (robots, rate limits).
+        Max pages is your total budget (list + member detail pages + pagination). Use at least 3–5 for member
+        directories. Optional external links stay within page/host caps and compliance (robots, rate limits).
       </p>
       <div className="mt-4 grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
         <label className="block">

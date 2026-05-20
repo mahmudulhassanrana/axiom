@@ -43,5 +43,9 @@ class ExtractedData(Base, TimestampMixin):
     country: Mapped[str | None] = mapped_column(String(255), nullable=True)
     city: Mapped[str | None] = mapped_column(String(255), nullable=True)
     published_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    parent_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    detail_page_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    page_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    crawl_session_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     run: Mapped["Run"] = relationship(back_populates="extracted_data")

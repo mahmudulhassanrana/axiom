@@ -83,6 +83,10 @@ def insert_extracted_data(run_id: UUID, doc: dict[str, Any]) -> None:
         "files",
         "file_links",
         "structured_entities",
+        "parent_url",
+        "detail_page_url",
+        "page_type",
+        "crawl_session_id",
     ):
         if key in doc and doc[key] is not None:
             payload[key] = doc[key]
@@ -117,6 +121,15 @@ def insert_extracted_data(run_id: UUID, doc: dict[str, Any]) -> None:
         except (TypeError, ValueError):
             crawl_depth = None
 
+    parent_url = doc.get("parent_url") or meta.get("parent_url") or meta.get("parent_list_url")
+    parent_url = str(parent_url).strip() if parent_url else None
+    detail_page_url = doc.get("detail_page_url") or meta.get("detail_page_url")
+    detail_page_url = str(detail_page_url).strip() if detail_page_url else None
+    page_type = doc.get("page_type") or meta.get("page_type")
+    page_type = str(page_type).strip()[:32] if page_type else None
+    crawl_session_id = doc.get("crawl_session_id") or meta.get("crawl_session_id")
+    crawl_session_id = str(crawl_session_id).strip()[:64] if crawl_session_id else None
+
     base_params = (
         str(row_id),
         str(run_id),
@@ -127,6 +140,35 @@ def insert_extracted_data(run_id: UUID, doc: dict[str, Any]) -> None:
         Json(payload),
         extractor_kind,
         http_status,
+    )
+
+    lineage_sql = """
+        INSERT INTO extracted_data (
+            id, run_id, source_url, final_url, title, text_content,
+            payload, extractor_kind, http_status,
+            country, city, published_date,
+            images, file_links, structured_entities, extraction_type, crawl_depth, is_restricted,
+            parent_url, detail_page_url, page_type, crawl_session_id,
+            created_at, updated_at
+        ) VALUES (
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+            %s, %s, %s, %s, NOW(), NOW()
+        )
+        """
+    lineage_params = base_params + (
+        country,
+        city,
+        published_date,
+        Json(images_val) if images_val is not None else None,
+        Json(file_links_val) if file_links_val is not None else None,
+        Json(struct_val) if struct_val is not None else None,
+        ext_type,
+        crawl_depth,
+        False,
+        parent_url,
+        detail_page_url,
+        page_type,
+        crawl_session_id,
     )
 
     extended_sql = """
@@ -173,6 +215,7 @@ def insert_extracted_data(run_id: UUID, doc: dict[str, Any]) -> None:
         """
 
     attempts: list[tuple[str, tuple[Any, ...]]] = [
+        (lineage_sql, lineage_params),
         (extended_sql, extended_params),
         (full_sql, base_params + (country, city, published_date)),
         (legacy_sql, base_params),
